@@ -113,3 +113,55 @@ async def test_mistral_embedding_provider():
     assert len(embeddings) == 2
     assert embeddings[0] == [0.1, 0.2, 0.3]
     assert embeddings[1] == [0.4, 0.5, 0.6]
+
+
+@pytest.mark.asyncio
+async def test_gemini_llm_structured_success():
+    from app.providers.llm.gemini_llm import GeminiLLMProvider
+    mock_client = MagicMock()
+    mock_response = MagicMock(text='{"title": "Backpropagation", "score": 0.95, "keywords": ["chain rule"]}')
+    mock_client.models.generate_content.return_value = mock_response
+
+    llm = GeminiLLMProvider(client=mock_client)
+    res = await llm.generate_structured(
+        prompt="Explain Backpropagation",
+        response_model=SampleOutputSchema,
+    )
+    assert res.title == "Backpropagation"
+    assert res.score == 0.95
+    assert "chain rule" in res.keywords
+
+
+@pytest.mark.asyncio
+async def test_gemini_llm_retry_once_on_validation_failure():
+    from app.providers.llm.gemini_llm import GeminiLLMProvider
+    mock_client = MagicMock()
+    # Attempt 1 returns invalid json/schema
+    mock_fail = MagicMock(text='{"bad_key": 123}')
+    # Attempt 2 returns valid schema
+    mock_success = MagicMock(text='{"title": "Fixed Schema", "score": 0.8, "keywords": ["recovered"]}')
+    mock_client.models.generate_content.side_effect = [mock_fail, mock_success]
+
+    llm = GeminiLLMProvider(client=mock_client)
+    res = await llm.generate_structured(
+        prompt="Explain",
+        response_model=SampleOutputSchema,
+    )
+    assert mock_client.models.generate_content.call_count == 2
+    assert res.title == "Fixed Schema"
+    assert res.score == 0.8
+
+
+@pytest.mark.asyncio
+async def test_gemini_embedding_provider():
+    from app.providers.embeddings.gemini_embed import GeminiEmbeddingProvider
+    mock_client = MagicMock()
+    mock_resp1 = MagicMock(embedding=MagicMock(values=[0.11, 0.22, 0.33]))
+    mock_resp2 = MagicMock(embedding=MagicMock(values=[0.44, 0.55, 0.66]))
+    mock_client.models.embed_content.side_effect = [mock_resp1, mock_resp2]
+
+    embed_provider = GeminiEmbeddingProvider(client=mock_client)
+    res = await embed_provider.embed_texts(["first", "second"])
+    assert len(res) == 2
+    assert res[0] == [0.11, 0.22, 0.33]
+    assert res[1] == [0.44, 0.55, 0.66]

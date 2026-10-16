@@ -11,9 +11,9 @@ async def test_health_endpoint(client: AsyncClient):
     assert data["success"] is True
     assert data["data"]["status"] == "healthy"
     assert "providers" in data["data"]
-    assert data["data"]["providers"]["llm"]["model"] == "mistral-large-latest"
-    assert data["data"]["providers"]["asr"]["model"] == "voxtral-mini-latest"
-    assert data["data"]["providers"]["embeddings"]["model"] == "mistral-embed"
+    assert data["data"]["providers"]["llm"]["model"] in ["mistral-large-latest", "gemini-2.5-flash"]
+    assert data["data"]["providers"]["asr"]["model"] in ["voxtral-mini-latest", "base", "gemini-2.5-flash"]
+    assert data["data"]["providers"]["embeddings"]["model"] in ["mistral-embed", "text-embedding-004"]
 
 
 @pytest.mark.asyncio

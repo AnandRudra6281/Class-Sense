@@ -31,14 +31,23 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Field(default_factory=lambda: Path("./uploads"))
     CHROMA_PERSIST_DIR: Path = Field(default_factory=lambda: Path("./chroma_db"))
 
-    # Mistral AI (Required for LLM, Embeddings, and primary Voxtral ASR)
+    # Mistral AI
     MISTRAL_API_KEY: str = ""
     MISTRAL_LLM_MODEL: str = "mistral-large-latest"
     MISTRAL_VOXTRAL_MODEL: str = "voxtral-mini-latest"
     MISTRAL_EMBED_MODEL: str = "mistral-embed"
 
-    # ASR Provider Configuration ("mistral_voxtral", "faster_whisper", "openai_whisper", "sarvam_ai")
-    ASR_PROVIDER: str = "mistral_voxtral"
+    # Google Gemini (Supported Alternative)
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_LLM_MODEL: str = "gemini-2.5-flash"
+    GEMINI_EMBED_MODEL: str = "text-embedding-004"
+
+    # Provider Selection ("auto", "mistral", "gemini")
+    LLM_PROVIDER: str = "auto"
+    EMBEDDING_PROVIDER: str = "auto"
+
+    # ASR Provider Configuration ("auto", "gemini_audio", "mistral_voxtral", "faster_whisper", "openai_whisper", "sarvam_ai")
+    ASR_PROVIDER: str = "auto"
     FASTER_WHISPER_MODEL: str = "base"
 
     # Optional Providers (Disabled unless keys provided)

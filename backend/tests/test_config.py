@@ -8,7 +8,8 @@ def test_settings_default_values():
     assert s.MISTRAL_LLM_MODEL == "mistral-large-latest"
     assert s.MISTRAL_VOXTRAL_MODEL == "voxtral-mini-latest"
     assert s.MISTRAL_EMBED_MODEL == "mistral-embed"
-    assert s.ASR_PROVIDER == "mistral_voxtral"
+    assert s.ASR_PROVIDER == "auto"
+    assert s.LLM_PROVIDER == "auto"
     assert isinstance(s.CORS_ORIGINS, list)
     assert len(s.CORS_ORIGINS) > 0
 

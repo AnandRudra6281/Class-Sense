@@ -27,20 +27,22 @@ async def health_check():
                 "asr": {
                     "active": asr.name,
                     "enabled": asr.is_enabled(),
-                    "model": settings.MISTRAL_VOXTRAL_MODEL if asr.name == "mistral_voxtral" else settings.FASTER_WHISPER_MODEL,
+                    "model": settings.GEMINI_LLM_MODEL if asr.name == "gemini_audio" else (settings.MISTRAL_VOXTRAL_MODEL if asr.name == "mistral_voxtral" else settings.FASTER_WHISPER_MODEL),
                 },
                 "llm": {
                     "active": llm.name,
                     "enabled": llm.is_enabled(),
-                    "model": settings.MISTRAL_LLM_MODEL,
+                    "model": settings.GEMINI_LLM_MODEL if llm.name == "gemini" else settings.MISTRAL_LLM_MODEL,
                 },
                 "embeddings": {
                     "active": embed.name,
                     "enabled": embed.is_enabled(),
-                    "model": settings.MISTRAL_EMBED_MODEL,
+                    "model": settings.GEMINI_EMBED_MODEL if embed.name == "gemini_embed" else settings.MISTRAL_EMBED_MODEL,
                 },
             },
             "adapters": {
+                "gemini": bool(settings.GEMINI_API_KEY),
+                "mistral": bool(settings.MISTRAL_API_KEY),
                 "openai_whisper": bool(settings.OPENAI_API_KEY),
                 "sarvam_ai": bool(settings.SARVAM_API_KEY),
             },
