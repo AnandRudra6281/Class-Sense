@@ -63,3 +63,15 @@ class TranscribeResponse(BaseModel):
     status: str
 
 
+class TopicSegmentationJobResponse(BaseModel):
+    job_id: str
+    lecture_id: str
+    status: str
+
+
+class ConfusionAnalysisJobResponse(BaseModel):
+    job_id: str
+    lecture_id: str
+    status: str
+
+

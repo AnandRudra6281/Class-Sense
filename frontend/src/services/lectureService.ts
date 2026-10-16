@@ -1,5 +1,5 @@
 import { request } from '../api/client';
-import { Lecture, LectureDetail, TranscriptSegment } from '../types';
+import { ConfusionEvent, Evidence, Lecture, LectureDetail, Topic, TranscriptSegment } from '../types';
 
 export interface IngestJobResponse {
   lecture_id: string;
@@ -17,6 +17,12 @@ export interface CreateLecturePayload {
   title: string;
   source_type: 'upload' | 'youtube';
   source_url?: string;
+}
+
+export interface JobTriggerResponse {
+  job_id: string;
+  lecture_id: string;
+  status: string;
 }
 
 export const lectureService = {
@@ -65,8 +71,8 @@ export const lectureService = {
     lectureId: string,
     provider: string = 'auto',
     language?: string
-  ): Promise<{ job_id: string; lecture_id: string; status: string }> {
-    return request<{ job_id: string; lecture_id: string; status: string }>(
+  ): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(
       `/lectures/${lectureId}/transcribe`,
       {
         method: 'POST',
@@ -77,5 +83,29 @@ export const lectureService = {
 
   async getTranscript(lectureId: string): Promise<TranscriptSegment[]> {
     return request<TranscriptSegment[]>(`/lectures/${lectureId}/transcript`);
+  },
+
+  async segmentTopics(lectureId: string): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(`/lectures/${lectureId}/segment-topics`, {
+      method: 'POST',
+    });
+  },
+
+  async getTopics(lectureId: string): Promise<Topic[]> {
+    return request<Topic[]>(`/lectures/${lectureId}/topics`);
+  },
+
+  async analyzeSignals(lectureId: string): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(`/lectures/${lectureId}/analyze-signals`, {
+      method: 'POST',
+    });
+  },
+
+  async getConfusionEvents(lectureId: string): Promise<ConfusionEvent[]> {
+    return request<ConfusionEvent[]>(`/lectures/${lectureId}/confusion-events`);
+  },
+
+  async getEvidence(lectureId: string): Promise<Evidence[]> {
+    return request<Evidence[]>(`/lectures/${lectureId}/evidence`);
   },
 };

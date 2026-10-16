@@ -11,21 +11,30 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import MediaProcessingError, ResourceNotFoundError
+from app.models.confusion import ConfusionEvent
+from app.models.evidence import Evidence
 from app.models.lecture import Lecture
+from app.models.topic import Topic
 from app.models.transcript import TranscriptSegment
 from app.schemas.common import ApiResponse
+from app.schemas.domain import ConfusionEventSchema, EvidenceSchema
 from app.schemas.lecture import (
+    ConfusionAnalysisJobResponse,
     IngestJobResponse,
     LectureCreate,
     LectureDetailResponse,
     LectureResponse,
+    TopicSegmentationJobResponse,
     TranscribeRequest,
     TranscribeResponse,
     YouTubeIngestRequest,
 )
+from app.schemas.topic import TopicSchema
 from app.schemas.transcript import TranscriptSegmentSchema
+from app.services.confusion_service import confusion_service
 from app.services.coordinates import compute_coordinates
 from app.services.ingestion_service import ingestion_service
+from app.services.topic_segmentation_service import topic_segmentation_service
 from app.services.transcription_service import transcription_service
 from app.services.youtube_downloader import youtube_downloader
 
@@ -252,3 +261,100 @@ async def create_lecture_scaffold(
     await db.commit()
     await db.refresh(lecture)
     return ApiResponse(data=LectureResponse.model_validate(lecture))
+
+
+@router.post("/{lecture_id}/segment-topics", response_model=ApiResponse[TopicSegmentationJobResponse])
+async def trigger_topic_segmentation(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers asynchronous LLM topic outline segmentation for an ingested and transcribed lecture.
+    """
+    job = await topic_segmentation_service.create_segmentation_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(topic_segmentation_service.run_topic_segmentation_pipeline, job.id)
+    return ApiResponse(
+        data=TopicSegmentationJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/topics", response_model=ApiResponse[List[TopicSchema]])
+async def get_lecture_topics(lecture_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Retrieve hierarchical pedagogical topics for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = select(Topic).where(Topic.lecture_id == lecture_id).order_by(Topic.start_time.asc())
+    res = await db.execute(stmt)
+    topics = res.scalars().all()
+    return ApiResponse(data=[TopicSchema.model_validate(t) for t in topics])
+
+
+@router.post("/{lecture_id}/analyze-signals", response_model=ApiResponse[ConfusionAnalysisJobResponse])
+async def trigger_signal_analysis(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Run empirical acoustic and linguistic confusion signal analysis over lecture transcript segments.
+    """
+    job = await confusion_service.create_analysis_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(confusion_service.run_confusion_pipeline, job.id)
+    return ApiResponse(
+        data=ConfusionAnalysisJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/confusion-events", response_model=ApiResponse[List[ConfusionEventSchema]])
+async def get_lecture_confusion_events(lecture_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Retrieve all detected cognitive friction and confusion events for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = (
+        select(ConfusionEvent)
+        .where(ConfusionEvent.lecture_id == lecture_id)
+        .order_by(ConfusionEvent.timestamp_start.asc())
+    )
+    res = await db.execute(stmt)
+    events = res.scalars().all()
+    return ApiResponse(data=[ConfusionEventSchema.model_validate(e) for e in events])
+
+
+@router.get("/{lecture_id}/evidence", response_model=ApiResponse[List[EvidenceSchema]])
+async def get_lecture_evidence(lecture_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Retrieve all grounding acoustic and transcript evidence items associated with confusion events.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = (
+        select(Evidence)
+        .join(ConfusionEvent, Evidence.confusion_id == ConfusionEvent.id)
+        .where(ConfusionEvent.lecture_id == lecture_id)
+        .order_by(Evidence.timestamp_start.asc())
+    )
+    res = await db.execute(stmt)
+    evidence_items = res.scalars().all()
+    return ApiResponse(data=[EvidenceSchema.model_validate(ev) for ev in evidence_items])

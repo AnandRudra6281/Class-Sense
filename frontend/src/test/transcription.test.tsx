@@ -9,6 +9,7 @@ vi.mock('../services/lectureService', () => ({
     listLectures: vi.fn(),
     getTranscript: vi.fn(),
     transcribeLecture: vi.fn(),
+    getTopics: vi.fn().mockResolvedValue([]),
   },
 }));
 
