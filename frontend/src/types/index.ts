@@ -1,7 +1,2 @@
-export * from './common';
-export * from './job';
-export * from './transcript';
-export * from './topic';
-export * from './confusion';
-export * from './intervention';
-export * from './lecture';
+export * from './domain';
+export type { ApiError, ApiMeta, ApiResponse } from './common';

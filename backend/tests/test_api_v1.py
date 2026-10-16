@@ -62,5 +62,5 @@ async def test_lectures_crud_flow(client: AsyncClient):
     assert detail["id"] == lecture_id
     assert "segments" in detail
     assert "topics" in detail
-    assert "confusion_points" in detail
+    assert "confusion_events" in detail
     assert "interventions" in detail

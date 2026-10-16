@@ -31,7 +31,7 @@ async def get_lecture_detail(lecture_id: str, db: AsyncSession = Depends(get_db)
         .options(
             selectinload(Lecture.segments),
             selectinload(Lecture.topics),
-            selectinload(Lecture.confusion_points),
+            selectinload(Lecture.confusion_events),
             selectinload(Lecture.interventions),
         )
     )

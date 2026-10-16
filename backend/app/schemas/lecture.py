@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.common import Coordinates3D
 from app.schemas.transcript import TranscriptSegmentSchema
 from app.schemas.topic import TopicSchema
-from app.schemas.confusion import ConfusionPointSchema
+from app.schemas.domain import ConfusionEventSchema
 from app.schemas.intervention import InterventionSchema
 
 
@@ -34,7 +34,7 @@ class LectureResponse(LectureBase):
 class LectureDetailResponse(LectureResponse):
     segments: List[TranscriptSegmentSchema] = Field(default_factory=list)
     topics: List[TopicSchema] = Field(default_factory=list)
-    confusion_points: List[ConfusionPointSchema] = Field(default_factory=list)
+    confusion_events: List[ConfusionEventSchema] = Field(default_factory=list)
     interventions: List[InterventionSchema] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)

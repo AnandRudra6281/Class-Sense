@@ -2,8 +2,7 @@ import enum
 from typing import Any, Optional
 from sqlalchemy import Enum as SQLEnum, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
-from app.core.database import Base
-from app.models.base import TimestampMixin, UUIDMixin
+from app.db.base import Base, CoordinatesMixin, TimestampMixin, UUIDMixin
 
 
 class JobStatus(str, enum.Enum):
@@ -13,8 +12,8 @@ class JobStatus(str, enum.Enum):
     DONE = "done"
 
 
-class Job(Base, UUIDMixin, TimestampMixin):
-    """Persisted background job status tracking."""
+class Job(Base, UUIDMixin, TimestampMixin, CoordinatesMixin):
+    """Persisted background job status tracking with 3D coordinates."""
     __tablename__ = "jobs"
 
     job_type: Mapped[str] = mapped_column(String(50), nullable=False)

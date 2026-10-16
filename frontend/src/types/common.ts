@@ -1,8 +1,4 @@
-export interface Coordinates3D {
-  x: number; // time position [0.0 - 100.0]
-  y: number; // confusion score [0.0 - 100.0]
-  z: number; // topic depth [0.0 - 10.0]
-}
+export type { Coordinates3D, JobStatus } from './domain';
 
 export interface ApiError {
   code: string;
@@ -22,5 +18,3 @@ export interface ApiResponse<T> {
   error: ApiError | null;
   meta: ApiMeta;
 }
-
-export type JobStatus = 'queued' | 'running' | 'failed' | 'done';

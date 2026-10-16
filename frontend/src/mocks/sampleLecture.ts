@@ -101,6 +101,7 @@ export const mockLectureDetail: LectureDetail = {
           confusion_id: 'cnf-001',
           concept_name: 'Multivariate Taylor Approximation',
           gap_description: 'Lack of understanding that 1st-order gradient assumes local linearity, which breaks down over large step sizes in high-curvature valleys.',
+          remediation_hint: 'Review 1st-order linear approximation vs quadratic curvature bounds before applying gradient descent.',
           depth: 2,
           vector_distance: 0.28,
           coordinates: { x: 30.83, y: 82.0, z: 2.0 },
