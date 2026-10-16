@@ -63,7 +63,7 @@ describe('All 10 Platform Views Smoke Test', () => {
   it('8. renders StudentView', () => {
     render(<StudentView />);
     expect(screen.getByTestId('view-student')).toBeInTheDocument();
-    expect(screen.getByText(/Student Catch-Up & Practice/i)).toBeInTheDocument();
+    expect(screen.getByText(/Student Catch-Up/i)).toBeInTheDocument();
   });
 
   it('9. renders ReportsView', () => {

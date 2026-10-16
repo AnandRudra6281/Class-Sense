@@ -14,6 +14,8 @@ from app.core.errors import MediaProcessingError, ResourceNotFoundError
 from app.models.confusion import ConfusionEvent
 from app.models.evidence import Evidence
 from app.models.intervention import Intervention
+from app.models.catchup import StudentCatchUp
+from app.models.quiz import QuizQuestion
 from app.models.lecture import Lecture
 from app.models.misconception import Misconception
 from app.models.prerequisite import PrerequisiteNode
@@ -41,6 +43,13 @@ from app.schemas.lecture import (
     TranscribeResponse,
     YouTubeIngestRequest,
 )
+from app.schemas.student import (
+    StudentCatchUpJobResponse,
+    StudentCatchUpResponse,
+    QuizQuestionResponse,
+    TutorChatRequest,
+    TutorChatResponse,
+)
 from app.schemas.topic import TopicSchema
 from app.schemas.transcript import TranscriptSegmentSchema
 from app.services.confusion_service import confusion_service
@@ -49,6 +58,8 @@ from app.services.ingestion_service import ingestion_service
 from app.services.intervention_service import intervention_service
 from app.services.misconception_service import misconception_service
 from app.services.prerequisite_service import prerequisite_service
+from app.services.socratic_tutor_service import socratic_tutor_service
+from app.services.student_catchup_service import student_catchup_service
 from app.services.topic_segmentation_service import topic_segmentation_service
 from app.services.transcription_service import transcription_service
 from app.services.youtube_downloader import youtube_downloader
@@ -499,3 +510,96 @@ async def get_lecture_interventions(
     res = await db.execute(query)
     interventions = res.scalars().all()
     return ApiResponse(data=[InterventionSchema.model_validate(inv) for inv in interventions])
+
+
+@router.post("/{lecture_id}/generate-catchup", response_model=ApiResponse[StudentCatchUpJobResponse])
+async def trigger_student_catchup_generation(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers structured LLM generation of student catch-up modules and progressive-hint practice quizzes.
+    """
+    job = await student_catchup_service.create_catchup_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(student_catchup_service.run_catchup_pipeline, job.id)
+    return ApiResponse(
+        data=StudentCatchUpJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/catchup", response_model=ApiResponse[List[StudentCatchUpResponse]])
+async def get_lecture_student_catchup(
+    lecture_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retrieve all synthesized student catch-up modules and nested diagnostic quiz questions for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = (
+        select(StudentCatchUp)
+        .where(StudentCatchUp.lecture_id == lecture_id)
+        .options(selectinload(StudentCatchUp.quiz_questions))
+        .order_by(StudentCatchUp.created_at.asc())
+    )
+    res = await db.execute(stmt)
+    catchups = res.scalars().all()
+
+    response_items = []
+    for cu in catchups:
+        quiz_items = [
+            QuizQuestionResponse(
+                id=q.id,
+                catchup_id=q.catchup_id,
+                question=q.question,
+                options=q.options,
+                correct_option_index=q.correct_option_index,
+                hints=q.hints,
+                explanation=q.explanation,
+                coordinates=q.coordinates,
+            )
+            for q in cu.quiz_questions
+        ]
+        response_items.append(
+            StudentCatchUpResponse(
+                id=cu.id,
+                lecture_id=cu.lecture_id,
+                topic_id=cu.topic_id,
+                title=cu.title,
+                summary=cu.summary,
+                concrete_analogy=cu.concrete_analogy,
+                key_takeaways=cu.key_takeaways,
+                quiz_questions=quiz_items,
+                coordinates=cu.coordinates,
+            )
+        )
+
+    return ApiResponse(data=response_items)
+
+
+@router.post("/{lecture_id}/tutor/chat", response_model=ApiResponse[TutorChatResponse])
+async def socratic_tutor_chat(
+    lecture_id: str,
+    payload: TutorChatRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Interactive Socratic dialogue endpoint for students with transcript grounding and suggested follow-ups.
+    """
+    response = await socratic_tutor_service.chat(
+        lecture_id=lecture_id,
+        message=payload.message,
+        db=db,
+        history=payload.history,
+        catchup_id=payload.catchup_id,
+    )
+    return ApiResponse(data=response)

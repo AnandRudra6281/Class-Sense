@@ -1,5 +1,18 @@
 import { request } from '../api/client';
-import { ConfusionEvent, Evidence, Intervention, Lecture, LectureDetail, Misconception, PrerequisiteNode, Topic, TranscriptSegment } from '../types';
+import {
+  ConfusionEvent,
+  Evidence,
+  Intervention,
+  Lecture,
+  LectureDetail,
+  Misconception,
+  PrerequisiteNode,
+  StudentCatchUp,
+  Topic,
+  TranscriptSegment,
+  TutorChatMessage,
+  TutorChatResponse,
+} from '../types';
 
 export interface IngestJobResponse {
   lecture_id: string;
@@ -138,5 +151,31 @@ export const lectureService = {
   async getInterventions(lectureId: string, targetType?: string): Promise<Intervention[]> {
     const query = targetType ? `?target_type=${encodeURIComponent(targetType)}` : '';
     return request<Intervention[]>(`/lectures/${lectureId}/interventions${query}`);
+  },
+
+  async generateStudentCatchUp(lectureId: string): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(`/lectures/${lectureId}/generate-catchup`, {
+      method: 'POST',
+    });
+  },
+
+  async getStudentCatchUp(lectureId: string): Promise<StudentCatchUp[]> {
+    return request<StudentCatchUp[]>(`/lectures/${lectureId}/catchup`);
+  },
+
+  async sendTutorChatMessage(
+    lectureId: string,
+    message: string,
+    history: TutorChatMessage[] = [],
+    catchupId?: string
+  ): Promise<TutorChatResponse> {
+    return request<TutorChatResponse>(`/lectures/${lectureId}/tutor/chat`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message,
+        history,
+        catchup_id: catchupId || null,
+      }),
+    });
   },
 };

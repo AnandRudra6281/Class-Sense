@@ -93,3 +93,9 @@ class InterventionJobResponse(BaseModel):
     status: str
 
 
+class StudentCatchUpJobResponse(BaseModel):
+    job_id: str
+    lecture_id: str
+    status: str
+
+

@@ -16,6 +16,13 @@ from app.schemas.domain import (
     QuizQuestionSchema,
     ReportSchema,
 )
+from app.schemas.student import (
+    StudentCatchUpResponse,
+    QuizQuestionResponse,
+    StudentCatchUpJobResponse,
+    TutorChatRequest,
+    TutorChatResponse,
+)
 
 __all__ = [
     "Coordinates3D",
@@ -36,4 +43,9 @@ __all__ = [
     "PracticeHintSchema",
     "QuizQuestionSchema",
     "ReportSchema",
+    "StudentCatchUpResponse",
+    "QuizQuestionResponse",
+    "StudentCatchUpJobResponse",
+    "TutorChatRequest",
+    "TutorChatResponse",
 ]

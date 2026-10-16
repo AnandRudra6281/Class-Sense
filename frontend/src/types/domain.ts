@@ -159,6 +159,7 @@ export interface StudentCatchUp {
   summary: string;
   concrete_analogy: string;
   key_takeaways: string[];
+  quiz_questions?: QuizQuestion[];
   coordinates: Coordinates3D;
 }
 
@@ -177,6 +178,32 @@ export interface QuizQuestion {
   hints: PracticeHint[];
   explanation: string;
   coordinates: Coordinates3D;
+}
+
+// Socratic Tutor & CatchUp DTOs
+export interface TutorChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface TutorChatRequest {
+  message: string;
+  history?: TutorChatMessage[];
+  catchup_id?: string;
+}
+
+export interface TutorChatResponse {
+  reply: string;
+  suggested_followups: string[];
+  grounded_timestamp?: number | null;
+  coordinates: Coordinates3D;
+}
+
+export interface StudentCatchUpJobResponse {
+  job_id: string;
+  lecture_id: string;
+  status: string;
+  progress_pct?: number;
 }
 
 // 12. Report
