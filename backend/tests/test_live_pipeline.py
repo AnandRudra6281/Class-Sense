@@ -24,6 +24,7 @@ from app.services.report_service import report_service
 from app.services.socratic_tutor_service import socratic_tutor_service
 from app.services.student_catchup_service import student_catchup_service
 from app.services.topic_segmentation_service import topic_segmentation_service
+from app.services.vector_store import VectorStoreService
 
 
 def is_configured_provider_key_missing() -> tuple[bool, str]:
@@ -191,12 +192,50 @@ async def test_live_pipeline_end_to_end_zero_mocks():
 
     # Stage 6: Live Prerequisite Tracing & ChromaDB Vectors
     print(f"\n[STAGE 6: LIVE PREREQUISITE TRACING (LLM: {get_llm_provider().name}, Embeddings: {get_embedding_provider().name})]")
+    # Verify test uses a temporary Chroma directory, never real chroma_db folder
+    assert settings.CHROMA_PERSIST_DIR.resolve() != (settings.BASE_DIR / "chroma_db").resolve(), (
+        "Test must use a temporary Chroma directory, never the real chroma_db folder!"
+    )
+
+    embed_provider = get_embedding_provider()
     async with async_session_factory() as db:
         prereqs = await prerequisite_service.trace_prerequisites_for_lecture(lecture_id, db)
     assert len(prereqs) > 0, "No prerequisite gaps traced by live LLM!"
-    print(f"Traced {len(prereqs)} Upstream Prerequisite Concepts in ChromaDB:")
+
+    # Assert that the vector store contains the expected vectors after Stage 6
+    query_text = "Vector spaces, linear combinations, and span"
+    query_embeddings = await embed_provider.embed_texts([query_text])
+    assert len(query_embeddings) == 1
+    query_emb = query_embeddings[0]
+    live_dim = len(query_emb)
+
+    live_vs = VectorStoreService(
+        provider=embed_provider.name,
+        model=embed_provider.model,
+        dimension=live_dim,
+    )
+
+    stored_count = live_vs.collection.count()
+    assert stored_count >= len(prereqs), (
+        f"Expected at least {len(prereqs)} vectors in ChromaDB collection '{live_vs.collection_name}', found {stored_count}"
+    )
+
+    # Perform real ChromaDB query to verify distances come from real ChromaDB queries
+    real_query_matches = live_vs.query_similar(
+        query_embedding=query_emb,
+        n_results=len(prereqs),
+        where={"lecture_id": lecture_id},
+    )
+    assert len(real_query_matches) > 0, "Real ChromaDB query returned zero matches!"
+    chroma_dist_by_id = {m["id"]: m["distance"] for m in real_query_matches}
+
+    print(f"Traced {len(prereqs)} Upstream Prerequisite Concepts in ChromaDB (Collection: '{live_vs.collection_name}', Stored Vectors: {stored_count}):")
     for p in prereqs:
-        print(f"  * Depth {p.depth}: '{p.concept_name}' (Cosine Vector Distance: {p.vector_distance:.4f})")
+        real_query_dist = chroma_dist_by_id.get(f"prereq-{p.id}", p.vector_distance)
+        assert isinstance(real_query_dist, float) and 0.0 <= real_query_dist <= 2.0, (
+            f"Expected real ChromaDB query distance float, got {real_query_dist}"
+        )
+        print(f"  * Depth {p.depth}: '{p.concept_name}' (Real ChromaDB Query Distance: {real_query_dist:.4f})")
         print(f"    Conceptual Gap: {p.gap_description}")
         print(f"    Remediation Hint: {p.remediation_hint}")
 

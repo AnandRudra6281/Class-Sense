@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import List, Optional
 from google import genai
@@ -17,6 +18,10 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     @property
     def name(self) -> str:
         return "gemini_embed"
+
+    @property
+    def model(self) -> str:
+        return settings.GEMINI_EMBED_MODEL
 
     def is_enabled(self) -> bool:
         key = settings.GEMINI_API_KEY or ""
@@ -40,10 +45,21 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             logger.info(f"Generating embeddings for {len(texts)} text(s) via Gemini ({model_name})...")
             embeddings_list: List[List[float]] = []
             for text in texts:
-                response = client.models.embed_content(
-                    model=model_name,
-                    contents=text,
-                )
+                response = None
+                for attempt in range(2):
+                    try:
+                        response = client.models.embed_content(
+                            model=model_name,
+                            contents=text,
+                        )
+                        break
+                    except Exception as err:
+                        if attempt == 0 and ("503" in str(err) or "unavailable" in str(err).lower() or "429" in str(err)):
+                            logger.warning(f"Transient Gemini embed error ({err}), retrying once...")
+                            await asyncio.sleep(2.0)
+                        else:
+                            raise
+
                 if hasattr(response, "embedding") and response.embedding and hasattr(response.embedding, "values") and response.embedding.values:
                     embeddings_list.append(list(response.embedding.values))
                 elif hasattr(response, "embeddings") and response.embeddings:

@@ -64,6 +64,35 @@ class JobService:
         return job
 
     @staticmethod
+    async def update_job_status(
+        job_id: str,
+        status: JobStatus | str,
+        progress_pct: Optional[int] = None,
+        db: Optional[AsyncSession] = None,
+        error_message: Optional[str] = None,
+    ) -> Job:
+        stat_val = JobStatus(status) if isinstance(status, str) else status
+        if db is not None:
+            return await JobService.update_job(
+                db, job_id, status=stat_val, progress_pct=progress_pct, error_message=error_message
+            )
+        async with async_session_factory() as sess:
+            return await JobService.update_job(
+                sess, job_id, status=stat_val, progress_pct=progress_pct, error_message=error_message
+            )
+
+    @staticmethod
+    async def update_job_progress(
+        job_id: str,
+        progress_pct: int,
+        db: Optional[AsyncSession] = None,
+    ) -> Job:
+        if db is not None:
+            return await JobService.update_job(db, job_id, progress_pct=progress_pct)
+        async with async_session_factory() as sess:
+            return await JobService.update_job(sess, job_id, progress_pct=progress_pct)
+
+    @staticmethod
     async def execute_task_with_tracking(
         job_id: str,
         task_coroutine_fn: Callable[[str, Callable[[int], Coroutine[Any, Any, None]]], Coroutine[Any, Any, dict[str, Any]]],

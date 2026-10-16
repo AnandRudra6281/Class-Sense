@@ -74,6 +74,12 @@ class EmbeddingProvider(ABC):
         """Name of the embedding provider."""
         pass
 
+    @property
+    @abstractmethod
+    def model(self) -> str:
+        """Model identifier used by the embedding provider."""
+        pass
+
     @abstractmethod
     def is_enabled(self) -> bool:
         """Whether the embedding provider is enabled."""

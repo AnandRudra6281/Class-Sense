@@ -1,10 +1,10 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from app.core.config import settings
 from app.core.errors import AppException, ProviderDisabledError
 from app.providers.base import ASRProvider
@@ -30,6 +30,16 @@ class GeminiTranscriptionResponse(BaseModel):
     language: str = "en"
     duration_seconds: float
     segments: List[GeminiAudioSegment]
+
+    @model_validator(mode="before")
+    @classmethod
+    def unwrap_outer_data(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            if "data" in v and isinstance(v["data"], dict):
+                return v["data"]
+            if "response" in v and isinstance(v["response"], dict):
+                return v["response"]
+        return v
 
 
 class GeminiAudioASR(ASRProvider):

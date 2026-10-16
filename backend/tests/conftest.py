@@ -12,7 +12,12 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 # Force test database URL and clear test keys
+import tempfile
+import shutil
+
+TEST_CHROMA_DIR = Path(tempfile.mkdtemp(prefix="test_chroma_"))
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_classsense.db"
+os.environ["CHROMA_PERSIST_DIR"] = str(TEST_CHROMA_DIR)
 os.environ["DEBUG"] = "true"
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["SARVAM_API_KEY"] = ""
@@ -21,9 +26,10 @@ from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
 
-# Ensure keys are empty for provider isolation tests
+# Ensure keys are empty for provider isolation tests and Chroma points to temp dir
 settings.OPENAI_API_KEY = ""
 settings.SARVAM_API_KEY = ""
+settings.CHROMA_PERSIST_DIR = TEST_CHROMA_DIR
 
 TEST_DB_PATH = Path("./test_classsense.db")
 
@@ -41,14 +47,23 @@ TestingSessionLocal = async_sessionmaker(
 )
 
 import app.core.database as db_module
+import app.db.session as session_module
 
 db_module.engine = test_engine
 db_module.async_session_factory = TestingSessionLocal
+session_module.engine = test_engine
+session_module.async_session_factory = TestingSessionLocal
 
 
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_chroma():
+    yield
+    shutil.rmtree(TEST_CHROMA_DIR, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

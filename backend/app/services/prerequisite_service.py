@@ -150,8 +150,17 @@ class PrerequisiteService:
 
                 context_embedding = embeddings[0]
                 concept_embeddings = embeddings[1:]
+                embed_dim = len(context_embedding)
+
+                # Ensure vector store collection is strictly scoped to provider + model + dimension
+                vector_store.ensure_collection(
+                    dimension=embed_dim,
+                    provider=embedding_provider.name,
+                    model=embedding_provider.model,
+                )
 
                 # 5. Persist into ChromaDB and create domain PrerequisiteNodes
+                event_created_nodes: List[PrerequisiteNode] = []
                 for g_idx, gap_item in enumerate(trace_result.gaps):
                     concept_emb = (
                         concept_embeddings[g_idx]
@@ -159,28 +168,39 @@ class PrerequisiteService:
                         else context_embedding
                     )
 
-                    # Compute vector distance via VectorStoreService
-                    vector_dist = VectorStoreService.compute_cosine_distance(
-                        context_embedding, concept_emb
+                    node_id = str(uuid.uuid4())
+                    concept_store_id = f"prereq-{node_id}"
+
+                    # Index in persistent ChromaDB - failures strictly raise AppException
+                    vector_store.add_concept(
+                        concept_id=concept_store_id,
+                        document=f"{gap_item.concept_name} - {gap_item.gap_description}",
+                        embedding=concept_emb,
+                        metadata={
+                            "lecture_id": lecture_id,
+                            "confusion_id": event.id,
+                            "concept_name": gap_item.concept_name,
+                            "depth": gap_item.depth,
+                        },
                     )
 
-                    node_id = str(uuid.uuid4())
+                    event_created_nodes.append(
+                        (node_id, concept_store_id, gap_item, concept_emb)
+                    )
 
-                    # Index in persistent ChromaDB
-                    try:
-                        vector_store.add_concept(
-                            concept_id=f"prereq-{node_id}",
-                            document=f"{gap_item.concept_name} - {gap_item.gap_description}",
-                            embedding=concept_emb,
-                            metadata={
-                                "lecture_id": lecture_id,
-                                "confusion_id": event.id,
-                                "concept_name": gap_item.concept_name,
-                                "depth": gap_item.depth,
-                            },
-                        )
-                    except Exception as store_err:
-                        logger.warning(f"ChromaDB add_concept warning: {store_err}")
+                # Query ChromaDB to obtain real computed vector distances from the vector store
+                chroma_matches = vector_store.query_similar(
+                    query_embedding=context_embedding,
+                    n_results=len(event_created_nodes),
+                    where={"confusion_id": event.id},
+                )
+                chroma_dist_map = {m["id"]: m["distance"] for m in chroma_matches}
+
+                for node_id, concept_store_id, gap_item, concept_emb in event_created_nodes:
+                    vector_dist = chroma_dist_map.get(
+                        concept_store_id,
+                        VectorStoreService.compute_cosine_distance(context_embedding, concept_emb),
+                    )
 
                     # Deterministic 3D coordinates:
                     # x = timeline position percentage of the confusion event
@@ -223,16 +243,22 @@ class PrerequisiteService:
             )
             return all_created_nodes
 
-        except AppException:
-            if job_id:
-                await JobService.update_job_status(job_id, "failed", 0, db)
+        except AppException as exc:
             await db.rollback()
+            if job_id:
+                try:
+                    await JobService.update_job_status(job_id, "failed", 0, error_message=exc.message)
+                except Exception as status_err:
+                    logger.warning(f"Failed to update job status on AppException: {status_err}")
             raise
         except Exception as exc:
+            await db.rollback()
             logger.error(f"Prerequisite tracing failed: {exc}", exc_info=True)
             if job_id:
-                await JobService.update_job_status(job_id, "failed", 0, db)
-            await db.rollback()
+                try:
+                    await JobService.update_job_status(job_id, "failed", 0, error_message=str(exc))
+                except Exception as status_err:
+                    logger.warning(f"Failed to update job status on Exception: {status_err}")
             raise AppException(
                 message=f"Prerequisite tracing failed: {str(exc)}",
                 code="PREREQUISITE_TRACING_FAILED",

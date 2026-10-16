@@ -18,6 +18,10 @@ class MistralEmbeddingProvider(EmbeddingProvider):
     def name(self) -> str:
         return "mistral_embed"
 
+    @property
+    def model(self) -> str:
+        return settings.MISTRAL_EMBED_MODEL
+
     def is_enabled(self) -> bool:
         return bool(settings.MISTRAL_API_KEY)
 

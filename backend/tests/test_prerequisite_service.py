@@ -177,6 +177,8 @@ async def test_prerequisite_pipeline_and_api_endpoints():
         mock_llm.generate_structured.return_value = mock_trace_result
 
         mock_embed = AsyncMock()
+        mock_embed.name = "mock_embed"
+        mock_embed.model = "mock-model"
         mock_embed.embed_texts.return_value = mock_embeddings
 
         # 3. Execute trace service with mocks
@@ -225,3 +227,81 @@ async def test_prerequisite_pipeline_and_api_endpoints():
         assert post_body["data"]["lecture_id"] == target_lec_id
         assert post_body["data"]["status"] == "queued"
         assert "job_id" in post_body["data"]
+
+
+@pytest.mark.asyncio
+async def test_failed_chromadb_upsert_fails_job_and_persists_no_nodes():
+    """Verify that a ChromaDB upsert failure fails the job with a clear error and persists zero prerequisite nodes."""
+    from app.models.job import JobStatus
+    from app.services.job_service import JobService
+    from sqlalchemy import select
+
+    async with async_session_factory() as db:
+        lecture = Lecture(
+            title="Lecture for ChromaDB Failure Test",
+            source_type="upload",
+            duration_seconds=300.0,
+            status="analyzed",
+            coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
+        )
+        db.add(lecture)
+        await db.flush()
+
+        event = ConfusionEvent(
+            lecture_id=lecture.id,
+            timestamp_start=10.0,
+            timestamp_end=20.0,
+            confusion_score=0.9,
+            misconception_text="Concept confusion",
+            evidence_text="Hesitation evidence",
+            coordinates={"x": 10.0, "y": 90.0, "z": 1.0},
+        )
+        db.add(event)
+        await db.commit()
+        await db.refresh(lecture)
+        await db.refresh(event)
+        lec_id = lecture.id
+        event_id = event.id
+
+        job = await JobService.create_job(db, job_type="prerequisite_tracing", payload={"lecture_id": lec_id})
+        job_id = job.id
+
+        mock_trace_result = PrerequisiteTraceResult(
+            gaps=[
+                PrerequisiteTraceItem(
+                    concept_name="Broken Concept",
+                    gap_description="Gap description",
+                    remediation_hint="Hint",
+                    depth=1,
+                )
+            ]
+        )
+        mock_llm = AsyncMock()
+        mock_llm.generate_structured.return_value = mock_trace_result
+
+        mock_embed = AsyncMock()
+        mock_embed.name = "mock_embed"
+        mock_embed.model = "mock_model"
+        mock_embed.embed_texts.return_value = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+        # Mock VectorStoreService.add_concept to raise an Exception
+        with patch("app.services.prerequisite_service.get_llm_provider", return_value=mock_llm), \
+             patch("app.services.prerequisite_service.get_embedding_provider", return_value=mock_embed), \
+             patch.object(VectorStoreService, "add_concept", side_effect=Exception("ChromaDB disk write failure")):
+
+            with pytest.raises(Exception) as exc_info:
+                await prerequisite_service.trace_prerequisites_for_lecture(lec_id, db, job_id=job_id)
+
+            assert "ChromaDB" in str(exc_info.value) or "prerequisite" in str(exc_info.value).lower()
+
+        # Verify job is marked as failed using a fresh session
+        async with async_session_factory() as check_db:
+            updated_job = await JobService.get_job(check_db, job_id)
+            assert updated_job.status == JobStatus.FAILED
+            assert "ChromaDB" in str(updated_job.error_message) or "failure" in str(updated_job.error_message).lower()
+
+            # Verify zero prerequisite nodes were stored
+            nodes_stmt = select(PrerequisiteNode).where(PrerequisiteNode.confusion_id == event_id)
+            res = await check_db.execute(nodes_stmt)
+            persisted_nodes = list(res.scalars().all())
+            assert len(persisted_nodes) == 0, "No prerequisite nodes should be reported if vectors failed to store!"
