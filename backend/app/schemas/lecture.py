@@ -87,3 +87,9 @@ class PrerequisiteTracingJobResponse(BaseModel):
     status: str
 
 
+class InterventionJobResponse(BaseModel):
+    job_id: str
+    lecture_id: str
+    status: str
+
+

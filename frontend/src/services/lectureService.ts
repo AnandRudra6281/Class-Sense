@@ -1,5 +1,5 @@
 import { request } from '../api/client';
-import { ConfusionEvent, Evidence, Lecture, LectureDetail, Misconception, PrerequisiteNode, Topic, TranscriptSegment } from '../types';
+import { ConfusionEvent, Evidence, Intervention, Lecture, LectureDetail, Misconception, PrerequisiteNode, Topic, TranscriptSegment } from '../types';
 
 export interface IngestJobResponse {
   lecture_id: string;
@@ -127,5 +127,16 @@ export const lectureService = {
 
   async getPrerequisites(lectureId: string): Promise<PrerequisiteNode[]> {
     return request<PrerequisiteNode[]>(`/lectures/${lectureId}/prerequisites`);
+  },
+
+  async generateInterventions(lectureId: string): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(`/lectures/${lectureId}/generate-interventions`, {
+      method: 'POST',
+    });
+  },
+
+  async getInterventions(lectureId: string, targetType?: string): Promise<Intervention[]> {
+    const query = targetType ? `?target_type=${encodeURIComponent(targetType)}` : '';
+    return request<Intervention[]>(`/lectures/${lectureId}/interventions${query}`);
   },
 };

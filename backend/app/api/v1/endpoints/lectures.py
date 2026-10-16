@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.core.errors import MediaProcessingError, ResourceNotFoundError
 from app.models.confusion import ConfusionEvent
 from app.models.evidence import Evidence
+from app.models.intervention import Intervention
 from app.models.lecture import Lecture
 from app.models.misconception import Misconception
 from app.models.prerequisite import PrerequisiteNode
@@ -22,12 +23,14 @@ from app.schemas.common import ApiResponse
 from app.schemas.domain import (
     ConfusionEventSchema,
     EvidenceSchema,
+    InterventionSchema,
     MisconceptionSchema,
     PrerequisiteNodeSchema,
 )
 from app.schemas.lecture import (
     ConfusionAnalysisJobResponse,
     IngestJobResponse,
+    InterventionJobResponse,
     LectureCreate,
     LectureDetailResponse,
     LectureResponse,
@@ -43,6 +46,7 @@ from app.schemas.transcript import TranscriptSegmentSchema
 from app.services.confusion_service import confusion_service
 from app.services.coordinates import compute_coordinates
 from app.services.ingestion_service import ingestion_service
+from app.services.intervention_service import intervention_service
 from app.services.misconception_service import misconception_service
 from app.services.prerequisite_service import prerequisite_service
 from app.services.topic_segmentation_service import topic_segmentation_service
@@ -451,3 +455,47 @@ async def get_lecture_prerequisites(lecture_id: str, db: AsyncSession = Depends(
     res = await db.execute(stmt)
     nodes = res.scalars().all()
     return ApiResponse(data=[PrerequisiteNodeSchema.model_validate(n) for n in nodes])
+
+
+@router.post("/{lecture_id}/generate-interventions", response_model=ApiResponse[InterventionJobResponse])
+async def trigger_intervention_generation(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers structured LLM generation of teacher interventions (actionable recap, diagnostic questions, pacing).
+    """
+    job = await intervention_service.create_intervention_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(intervention_service.run_intervention_pipeline, job.id)
+    return ApiResponse(
+        data=InterventionJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/interventions", response_model=ApiResponse[List[InterventionSchema]])
+async def get_lecture_interventions(
+    lecture_id: str,
+    target_type: Optional[str] = "teacher",
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retrieve all synthesized interventions (teacher or student) for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    query = select(Intervention).where(Intervention.lecture_id == lecture_id)
+    if target_type:
+        query = query.where(Intervention.target_type == target_type)
+    query = query.order_by(Intervention.created_at.asc())
+
+    res = await db.execute(query)
+    interventions = res.scalars().all()
+    return ApiResponse(data=[InterventionSchema.model_validate(inv) for inv in interventions])

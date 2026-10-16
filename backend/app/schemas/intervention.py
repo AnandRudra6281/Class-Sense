@@ -8,12 +8,26 @@ class DiagnosticQuestion(BaseModel):
     options: List[str]
     correct_option_index: int
     rationale: str
+    targeted_misconception: Optional[str] = None
 
 
 class TeacherInterventionContent(BaseModel):
     actionable_recap: List[str]
     diagnostic_questions: List[DiagnosticQuestion]
     recommended_pacing: str
+    blackboard_analogy: str = ""
+
+
+class TeacherInterventionPackage(BaseModel):
+    title: str
+    actionable_recap: List[str]
+    diagnostic_questions: List[DiagnosticQuestion]
+    recommended_pacing: str
+    blackboard_analogy: str = ""
+
+
+class TeacherInterventionResponse(BaseModel):
+    interventions: List[TeacherInterventionPackage]
 
 
 class PracticeHint(BaseModel):
