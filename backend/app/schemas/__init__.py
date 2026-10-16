@@ -23,6 +23,11 @@ from app.schemas.student import (
     TutorChatRequest,
     TutorChatResponse,
 )
+from app.schemas.report import (
+    ReportResponse,
+    ReportJobResponse,
+    ReportExportResponse,
+)
 
 __all__ = [
     "Coordinates3D",
@@ -48,4 +53,7 @@ __all__ = [
     "StudentCatchUpJobResponse",
     "TutorChatRequest",
     "TutorChatResponse",
+    "ReportResponse",
+    "ReportJobResponse",
+    "ReportExportResponse",
 ]

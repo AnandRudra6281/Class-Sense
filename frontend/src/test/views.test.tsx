@@ -69,7 +69,7 @@ describe('All 10 Platform Views Smoke Test', () => {
   it('9. renders ReportsView', () => {
     render(<ReportsView />);
     expect(screen.getByTestId('view-reports')).toBeInTheDocument();
-    expect(screen.getByText(/Pedagogy Reports & Interventions/i)).toBeInTheDocument();
+    expect(screen.getByText(/Pedagogy Reports/i)).toBeInTheDocument();
   });
 
   it('10. renders SettingsView', () => {

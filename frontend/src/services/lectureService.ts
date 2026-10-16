@@ -7,6 +7,8 @@ import {
   LectureDetail,
   Misconception,
   PrerequisiteNode,
+  Report,
+  ReportExportResponse,
   StudentCatchUp,
   Topic,
   TranscriptSegment,
@@ -177,5 +179,19 @@ export const lectureService = {
         catchup_id: catchupId || null,
       }),
     });
+  },
+
+  async generateReport(lectureId: string): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(`/lectures/${lectureId}/generate-report`, {
+      method: 'POST',
+    });
+  },
+
+  async getReports(lectureId: string): Promise<Report[]> {
+    return request<Report[]>(`/lectures/${lectureId}/reports`);
+  },
+
+  async exportReport(lectureId: string, reportId: string, format: string = 'markdown'): Promise<ReportExportResponse> {
+    return request<ReportExportResponse>(`/lectures/${lectureId}/reports/${reportId}/export?format=${encodeURIComponent(format)}`);
   },
 };

@@ -217,6 +217,16 @@ export interface Report {
   metrics: Record<string, unknown>;
   export_format: string;
   coordinates: Coordinates3D;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ReportExportResponse {
+  report_id: string;
+  lecture_id: string;
+  format: string;
+  content: string;
+  filename: string;
 }
 
 // Job DTOs

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import uuid
@@ -19,6 +20,7 @@ from app.models.quiz import QuizQuestion
 from app.models.lecture import Lecture
 from app.models.misconception import Misconception
 from app.models.prerequisite import PrerequisiteNode
+from app.models.report import Report
 from app.models.topic import Topic
 from app.models.transcript import TranscriptSegment
 from app.schemas.common import ApiResponse
@@ -38,10 +40,15 @@ from app.schemas.lecture import (
     LectureResponse,
     MisconceptionExtractionJobResponse,
     PrerequisiteTracingJobResponse,
+    ReportJobResponse,
     TopicSegmentationJobResponse,
     TranscribeRequest,
     TranscribeResponse,
     YouTubeIngestRequest,
+)
+from app.schemas.report import (
+    ReportExportResponse,
+    ReportResponse,
 )
 from app.schemas.student import (
     StudentCatchUpJobResponse,
@@ -58,6 +65,7 @@ from app.services.ingestion_service import ingestion_service
 from app.services.intervention_service import intervention_service
 from app.services.misconception_service import misconception_service
 from app.services.prerequisite_service import prerequisite_service
+from app.services.report_service import report_service
 from app.services.socratic_tutor_service import socratic_tutor_service
 from app.services.student_catchup_service import student_catchup_service
 from app.services.topic_segmentation_service import topic_segmentation_service
@@ -603,3 +611,85 @@ async def socratic_tutor_chat(
         catchup_id=payload.catchup_id,
     )
     return ApiResponse(data=response)
+
+
+@router.post("/{lecture_id}/generate-report", response_model=ApiResponse[ReportJobResponse])
+async def trigger_report_generation(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers structured LLM generation of a comprehensive Pedagogy Quality & Cognitive Audit Report.
+    """
+    job = await report_service.create_report_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(report_service.run_report_pipeline, job.id)
+    return ApiResponse(
+        data=ReportJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/reports", response_model=ApiResponse[List[ReportResponse]])
+async def get_lecture_reports(
+    lecture_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retrieve all synthesized pedagogy audit reports for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = select(Report).where(Report.lecture_id == lecture_id).order_by(Report.created_at.desc())
+    res = await db.execute(stmt)
+    reports = res.scalars().all()
+    return ApiResponse(data=[ReportResponse.model_validate(r) for r in reports])
+
+
+@router.get("/{lecture_id}/reports/{report_id}/export", response_model=ApiResponse[ReportExportResponse])
+async def export_lecture_report(
+    lecture_id: str,
+    report_id: str,
+    format: Optional[str] = "markdown",
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export pedagogy audit report formatted as Markdown or structured JSON.
+    """
+    stmt_l = select(Lecture).where(Lecture.id == lecture_id)
+    res_l = await db.execute(stmt_l)
+    lecture = res_l.scalar_one_or_none()
+    if not lecture:
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt_r = select(Report).where(Report.id == report_id, Report.lecture_id == lecture_id)
+    res_r = await db.execute(stmt_r)
+    report = res_r.scalar_one_or_none()
+    if not report:
+        raise ResourceNotFoundError("Report", report_id)
+
+    safe_title = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in lecture.title)
+
+    if format == "json":
+        report_data = ReportResponse.model_validate(report).model_dump(mode="json")
+        content_str = json.dumps(report_data, indent=2)
+        filename = f"ClassSense_Audit_{safe_title}.json"
+    else:
+        content_str = report_service.export_report_markdown(report, lecture)
+        filename = f"ClassSense_Audit_{safe_title}.md"
+
+    return ApiResponse(
+        data=ReportExportResponse(
+            report_id=report.id,
+            lecture_id=lecture.id,
+            format=format or "markdown",
+            content=content_str,
+            filename=filename,
+        )
+    )
