@@ -1,5 +1,5 @@
 import { request } from '../api/client';
-import { Lecture, LectureDetail } from '../types';
+import { Lecture, LectureDetail, TranscriptSegment } from '../types';
 
 export interface IngestJobResponse {
   lecture_id: string;
@@ -59,5 +59,23 @@ export const lectureService = {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+  },
+
+  async transcribeLecture(
+    lectureId: string,
+    provider: string = 'auto',
+    language?: string
+  ): Promise<{ job_id: string; lecture_id: string; status: string }> {
+    return request<{ job_id: string; lecture_id: string; status: string }>(
+      `/lectures/${lectureId}/transcribe`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ provider, language }),
+      }
+    );
+  },
+
+  async getTranscript(lectureId: string): Promise<TranscriptSegment[]> {
+    return request<TranscriptSegment[]>(`/lectures/${lectureId}/transcript`);
   },
 };

@@ -12,16 +12,21 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import MediaProcessingError, ResourceNotFoundError
 from app.models.lecture import Lecture
+from app.models.transcript import TranscriptSegment
 from app.schemas.common import ApiResponse
 from app.schemas.lecture import (
     IngestJobResponse,
     LectureCreate,
     LectureDetailResponse,
     LectureResponse,
+    TranscribeRequest,
+    TranscribeResponse,
     YouTubeIngestRequest,
 )
+from app.schemas.transcript import TranscriptSegmentSchema
 from app.services.coordinates import compute_coordinates
 from app.services.ingestion_service import ingestion_service
+from app.services.transcription_service import transcription_service
 from app.services.youtube_downloader import youtube_downloader
 
 router = APIRouter()
@@ -174,6 +179,58 @@ async def delete_lecture(lecture_id: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return ApiResponse(data={"deleted": True, "lecture_id": lecture_id})
+
+
+@router.post("/{lecture_id}/transcribe", response_model=ApiResponse[TranscribeResponse])
+async def trigger_lecture_transcription(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    payload: Optional[TranscribeRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Launch asynchronous word/segment timestamped speech-to-text transcription for an ingested lecture.
+    """
+    req_provider = payload.provider if payload and payload.provider else "auto"
+    req_lang = payload.language if payload else None
+
+    job = await transcription_service.create_transcription_job(
+        db=db,
+        lecture_id=lecture_id,
+        provider_name=req_provider,
+        language=req_lang,
+    )
+
+    background_tasks.add_task(transcription_service.run_transcription_pipeline, job.id)
+
+    return ApiResponse(
+        data=TranscribeResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/transcript", response_model=ApiResponse[List[TranscriptSegmentSchema]])
+async def get_lecture_transcript(lecture_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Retrieve word-aligned transcript segments for a lecture ordered chronologically.
+    """
+    # Check if lecture exists
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = (
+        select(TranscriptSegment)
+        .where(TranscriptSegment.lecture_id == lecture_id)
+        .order_by(TranscriptSegment.start_time.asc())
+    )
+    res = await db.execute(stmt)
+    segments = res.scalars().all()
+    return ApiResponse(data=[TranscriptSegmentSchema.model_validate(seg) for seg in segments])
 
 
 @router.post("", response_model=ApiResponse[LectureResponse])

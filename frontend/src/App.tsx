@@ -30,7 +30,7 @@ export const App: React.FC = () => {
       case 'upload':
         return <UploadView onNavigate={navigateTo} />;
       case 'analysis':
-        return <AnalysisView />;
+        return <AnalysisView onNavigate={navigateTo} />;
       case 'evidence':
         return <EvidenceView />;
       case 'misconceptions':

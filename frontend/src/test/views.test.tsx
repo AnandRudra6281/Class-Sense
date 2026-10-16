@@ -40,10 +40,12 @@ describe('All 10 Platform Views Smoke Test', () => {
     expect(screen.getByText(/Ingest Lecture Video \/ Audio/i)).toBeInTheDocument();
   });
 
-  it('5. renders AnalysisView', () => {
+  it('5. renders AnalysisView', async () => {
     render(<AnalysisView />);
-    expect(screen.getByTestId('view-analysis')).toBeInTheDocument();
-    expect(screen.getByText(/Lecture Timeline & Topic Hierarchy/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('view-analysis')).toBeInTheDocument();
+      expect(screen.getByText(/Lecture Timeline & Transcript Segments/i)).toBeInTheDocument();
+    });
   });
 
   it('6. renders EvidenceView', () => {

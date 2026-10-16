@@ -51,3 +51,15 @@ class IngestJobResponse(BaseModel):
     status: str
     title: str
 
+
+class TranscribeRequest(BaseModel):
+    provider: Optional[str] = "auto"
+    language: Optional[str] = None
+
+
+class TranscribeResponse(BaseModel):
+    job_id: str
+    lecture_id: str
+    status: str
+
+
