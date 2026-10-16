@@ -115,7 +115,16 @@ In PowerShell from the `backend/` directory:
 python -m pytest -v
 ```
 
-All 22 backend test suites will execute, covering health checks, Pydantic schemas with coordinates, provider abstractions, retry-once recovery, and background jobs.
+All 57 backend test suites will execute, covering:
+- Health and error envelope endpoints
+- Media ingestion (audio/video file upload, `yt-dlp` YouTube downloads, `ffmpeg` 16kHz mono WAV extraction)
+- Transcription pipeline (faster-whisper and cloud ASR with word timestamps)
+- Empirical confusion signal engine (`docs/CONFUSION_METHOD.md`) & hierarchical topic segmentation
+- Structured LLM misconception extraction with cognitive load scoring
+- ChromaDB persistent vector retrieval and prerequisite graph tracing
+- Teacher interventions synthesis (recap checklists, analogies, diagnostic checks)
+- Student catch-up package synthesis & grounded Socratic AI tutor
+- Pedagogy quality audit reports, quantitative metrics, and multi-format exports
 
 ---
 
