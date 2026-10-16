@@ -51,8 +51,8 @@ class Settings(BaseSettings):
 
     # Google Gemini (Supported Alternative)
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_LLM_MODEL: str = "gemini-2.5-flash"
-    GEMINI_EMBED_MODEL: str = "text-embedding-004"
+    GEMINI_LLM_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_EMBED_MODEL: str = "gemini-embedding-001"
 
     # Provider Selection ("mistral" default, "gemini" optional adapter, "auto")
     LLM_PROVIDER: str = "mistral"
@@ -67,7 +67,11 @@ class Settings(BaseSettings):
     SARVAM_API_KEY: Optional[str] = None
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=[
+            str(Path(__file__).resolve().parent.parent.parent / ".env"),
+            str(Path(__file__).resolve().parent.parent.parent.parent / ".env"),
+            ".env",
+        ],
         env_file_encoding="utf-8",
         extra="ignore",
     )

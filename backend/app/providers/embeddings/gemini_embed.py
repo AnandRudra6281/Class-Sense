@@ -44,8 +44,10 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
                     model=model_name,
                     contents=text,
                 )
-                if response.embedding and response.embedding.values:
+                if hasattr(response, "embedding") and response.embedding and hasattr(response.embedding, "values") and response.embedding.values:
                     embeddings_list.append(list(response.embedding.values))
+                elif hasattr(response, "embeddings") and response.embeddings:
+                    embeddings_list.append(list(response.embeddings[0].values))
                 else:
                     embeddings_list.append([])
             return embeddings_list

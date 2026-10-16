@@ -154,8 +154,14 @@ async def test_gemini_llm_retry_once_on_validation_failure():
 async def test_gemini_embedding_provider():
     from app.providers.embeddings.gemini_embed import GeminiEmbeddingProvider
     mock_client = MagicMock()
-    mock_resp1 = MagicMock(embedding=MagicMock(values=[0.11, 0.22, 0.33]))
-    mock_resp2 = MagicMock(embedding=MagicMock(values=[0.44, 0.55, 0.66]))
+    mock_resp1 = MagicMock(
+        embedding=MagicMock(values=[0.11, 0.22, 0.33]),
+        embeddings=[MagicMock(values=[0.11, 0.22, 0.33])],
+    )
+    mock_resp2 = MagicMock(
+        embedding=MagicMock(values=[0.44, 0.55, 0.66]),
+        embeddings=[MagicMock(values=[0.44, 0.55, 0.66])],
+    )
     mock_client.models.embed_content.side_effect = [mock_resp1, mock_resp2]
 
     embed_provider = GeminiEmbeddingProvider(client=mock_client)

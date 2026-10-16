@@ -1,11 +1,18 @@
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, Field, model_validator
 from app.schemas.common import Coordinates3D
 
 
 class PracticeHintSchema(BaseModel):
-    step: int = Field(ge=1, description="Sequential hint step number")
+    step: int = Field(default=1, ge=1, description="Sequential hint step number")
     hint: str = Field(description="Socratic hint guiding the student closer to the solution")
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_raw_hint(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"step": 1, "hint": data}
+        return data
 
 
 class QuizQuestionResponse(BaseModel):

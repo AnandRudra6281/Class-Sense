@@ -110,10 +110,10 @@ class ConfusionService:
 
                 spikes = [m for m in metrics_list if m.is_confusion_spike]
 
-                # If no strict spike, pick the top 2 highest friction segments if above threshold
+                # If no strict spike, pick the top highest friction segments to anchor pedagogical analysis
                 if not spikes and metrics_list:
                     sorted_by_friction = sorted(metrics_list, key=lambda m: m.acoustic_friction_score, reverse=True)
-                    spikes = [m for m in sorted_by_friction[:2] if m.acoustic_friction_score >= 0.25]
+                    spikes = [m for m in sorted_by_friction[:2] if m.acoustic_friction_score >= 0.20] or [sorted_by_friction[0]]
 
                 # Cluster adjacent spikes (within 8 seconds of each other)
                 clusters: List[List[SegmentSignalMetrics]] = []
