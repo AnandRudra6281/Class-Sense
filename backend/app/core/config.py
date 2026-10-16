@@ -54,12 +54,12 @@ class Settings(BaseSettings):
     GEMINI_LLM_MODEL: str = "gemini-2.5-flash"
     GEMINI_EMBED_MODEL: str = "text-embedding-004"
 
-    # Provider Selection ("auto", "mistral", "gemini")
-    LLM_PROVIDER: str = "auto"
-    EMBEDDING_PROVIDER: str = "auto"
+    # Provider Selection ("mistral" default, "gemini" optional adapter, "auto")
+    LLM_PROVIDER: str = "mistral"
+    EMBEDDING_PROVIDER: str = "mistral"
 
-    # ASR Provider Configuration ("auto", "gemini_audio", "mistral_voxtral", "faster_whisper", "openai_whisper", "sarvam_ai")
-    ASR_PROVIDER: str = "auto"
+    # ASR Provider Configuration ("faster_whisper" default, "mistral_voxtral", "gemini_audio" optional, "auto")
+    ASR_PROVIDER: str = "faster_whisper"
     FASTER_WHISPER_MODEL: str = "base"
 
     # Optional Providers (Disabled unless keys provided)

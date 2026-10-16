@@ -2,7 +2,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import BaseModel, Field
-from app.core.errors import LLMValidationError, ProviderDisabledError
+from app.core.errors import AppException, LLMValidationError, ProviderDisabledError
 from app.providers.asr.openai_whisper import OpenAIWhisperASR
 from app.providers.asr.sarvam_ai import SarvamAIASR
 from app.providers.embeddings.mistral_embed import MistralEmbeddingProvider
@@ -16,18 +16,16 @@ class SampleOutputSchema(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_adapters_disabled_without_keys():
-    openai_provider = OpenAIWhisperASR()
-    assert openai_provider.is_enabled() is False
-    with pytest.raises(ProviderDisabledError) as exc_info:
-        await openai_provider.transcribe(Path("dummy.wav"))
-    assert "OPENAI_API_KEY" in str(exc_info.value)
+async def test_unimplemented_adapters_raise_at_registration():
+    with pytest.raises(AppException) as exc_info:
+        OpenAIWhisperASR()
+    assert exc_info.value.code == "ADAPTER_NOT_IMPLEMENTED"
+    assert "OpenAI Whisper adapter is not implemented" in exc_info.value.message
 
-    sarvam_provider = SarvamAIASR()
-    assert sarvam_provider.is_enabled() is False
-    with pytest.raises(ProviderDisabledError) as exc_info:
-        await sarvam_provider.transcribe(Path("dummy.wav"))
-    assert "SARVAM_API_KEY" in str(exc_info.value)
+    with pytest.raises(AppException) as exc_info_sarvam:
+        SarvamAIASR()
+    assert exc_info_sarvam.value.code == "ADAPTER_NOT_IMPLEMENTED"
+    assert "Sarvam AI adapter is not implemented" in exc_info_sarvam.value.message
 
 
 @pytest.mark.asyncio

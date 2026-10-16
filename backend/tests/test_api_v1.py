@@ -17,22 +17,25 @@ async def test_health_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_jobs_simulation_and_polling(client: AsyncClient):
-    create_res = await client.post(
-        "/api/v1/jobs/test-simulate",
-        json={"job_type": "transcription_test", "payload": {"file": "lecture.mp4"}},
-    )
-    assert create_res.status_code == 200
-    job_data = create_res.json()["data"]
-    job_id = job_data["id"]
-    assert job_data["job_type"] == "transcription_test"
+async def test_jobs_polling_lifecycle(client: AsyncClient):
+    from app.db.session import async_session_factory
+    from app.services.job_service import JobService
+
+    async with async_session_factory() as db:
+        job = await JobService.create_job(
+            db,
+            job_type="transcription",
+            payload={"lecture_id": "test-lecture-123"},
+        )
+        job_id = job.id
 
     # Poll status immediately
     poll_res = await client.get(f"/api/v1/jobs/{job_id}")
     assert poll_res.status_code == 200
     status_data = poll_res.json()["data"]
     assert status_data["id"] == job_id
-    assert status_data["status"] in ["queued", "running", "done"]
+    assert status_data["job_type"] == "transcription"
+    assert status_data["status"] == "queued"
 
 
 @pytest.mark.asyncio

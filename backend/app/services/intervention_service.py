@@ -211,32 +211,11 @@ class InterventionService:
             )
 
             if not response.interventions:
-                logger.warning(f"LLM returned no interventions for lecture {lecture_id}, creating fallback intervention.")
-                response.interventions = [
-                    TeacherInterventionPackage(
-                        title=f"Targeted Review for {lecture.title}",
-                        actionable_recap=[
-                            "Review foundational lecture definitions with two contrasting examples.",
-                            "Check for student understanding of prerequisite formulas before new material.",
-                        ],
-                        diagnostic_questions=[
-                            {
-                                "question": "Which statement correctly describes the core concept introduced in this lecture?",
-                                "options": [
-                                    "Option A represents the primary definition",
-                                    "Option B is a common misconception",
-                                    "Option C is a partial understanding",
-                                    "Option D is mathematically inverted",
-                                ],
-                                "correct_option_index": 0,
-                                "rationale": "Option A directly verifies the correct mental model.",
-                                "targeted_misconception": "Baseline conceptual confusion",
-                            }
-                        ],
-                        recommended_pacing="Maintain a steady pace and pause after key theorem statements.",
-                        blackboard_analogy="Think of this concept as a balance scale where both sides must equilibrate.",
-                    )
-                ]
+                raise AppException(
+                    f"LLM returned no teacher interventions for lecture {lecture_id}.",
+                    code="INTERVENTION_GENERATION_FAILED",
+                    status_code=502,
+                )
 
             if job_id:
                 await JobService.update_job_progress(job_id, 75, db)

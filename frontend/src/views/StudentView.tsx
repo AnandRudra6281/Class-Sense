@@ -646,6 +646,16 @@ export const StudentView: React.FC = () => {
             )}
           </div>
 
+          {/* Inline Chat Error Banner */}
+          {error && (
+            <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded-xl text-rose-300 text-xs flex items-center justify-between">
+              <span>{error}</span>
+              <button type="button" onClick={() => setError(null)} className="text-rose-400 hover:text-rose-200 text-xs font-semibold ml-2">
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {/* Chat Input Bar */}
           <form
             onSubmit={(e) => {

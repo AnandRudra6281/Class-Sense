@@ -145,15 +145,11 @@ class SocraticTutorService:
             )
         except Exception as exc:
             logger.error(f"Socratic tutor LLM generation failed: {exc}", exc_info=True)
-            # Fallback response
-            response = LLMTutorResponse(
-                reply="That is an important question. Before we dive into the answer, what part of the lecture definition felt most surprising or counter-intuitive to you?",
-                suggested_followups=[
-                    "Can you break down the main formula step by step?",
-                    "What is a real-world analogy for this concept?",
-                    "How does this relate to the previous lecture topic?",
-                ],
-                grounded_timestamp=segments[0].start_time if segments else 0.0,
+            raise AppException(
+                message=f"Socratic tutor response generation failed: {str(exc)}",
+                code="SOCRATIC_TUTOR_FAILED",
+                status_code=502,
+                details={"error": str(exc)},
             )
 
         # Calculate deterministic 3D coordinates

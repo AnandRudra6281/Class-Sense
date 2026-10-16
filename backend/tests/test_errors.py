@@ -17,8 +17,8 @@ async def test_error_envelope_on_404(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_error_envelope_on_validation_error(client: AsyncClient):
-    # Missing required field in POST /api/v1/jobs/test-simulate
-    response = await client.post("/api/v1/jobs/test-simulate", json={})
+    # Missing required fields 'title' and 'source_type' in POST /api/v1/lectures
+    response = await client.post("/api/v1/lectures", json={})
     assert response.status_code == 422
     data = response.json()
     assert data["success"] is False

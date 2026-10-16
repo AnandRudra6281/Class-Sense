@@ -223,28 +223,16 @@ class ReportService:
 
             llm = get_llm_provider()
             logger.info(f"Synthesizing audit report via LLM for lecture {lecture_id}...")
-            try:
-                response: LLMReportPayload = await llm.generate_structured(
-                    prompt=prompt,
-                    response_model=LLMReportPayload,
-                    system_prompt=REPORT_SYSTEM_PROMPT,
-                )
-            except Exception as exc:
-                logger.warning(f"LLM generation failed for report: {exc}, using fallback narrative.")
-                response = LLMReportPayload(
-                    title=f"Pedagogy Quality & Cognitive Audit: {lecture.title}",
-                    executive_summary=(
-                        f"The analyzed lecture '{lecture.title}' demonstrated coherent conceptual sequencing across {len(lecture.topics)} topics. "
-                        f"However, empirical signal analysis identified {confusion_spikes} prominent cognitive friction spikes where pause density "
-                        f"and speech rate anomalies indicated student hesitation. The primary conceptual bottlenecks correlated with "
-                        f"{critical_misconceptions} critical misconceptions, specifically around abstract operational definitions and prerequisite gaps."
-                    ),
-                    key_recommendations=[
-                        "Introduce a 3–5 minute concrete visual analogy at the opening of the next lecture to anchor abstract concepts.",
-                        "Slow instructional pacing following major theorem introductions to give students time to internalize notation.",
-                        "Incorporate diagnostic checkpoint questions with active distractor rationales to test for persistent misconceptions.",
-                        "Provide targeted review on foundational prerequisite principles before compound applications.",
-                    ],
+            response: LLMReportPayload = await llm.generate_structured(
+                prompt=prompt,
+                response_model=LLMReportPayload,
+                system_prompt=REPORT_SYSTEM_PROMPT,
+            )
+            if not response or not response.key_recommendations:
+                raise AppException(
+                    f"LLM returned invalid or empty audit report for lecture {lecture_id}.",
+                    code="REPORT_GENERATION_FAILED",
+                    status_code=502,
                 )
 
             if job_id:

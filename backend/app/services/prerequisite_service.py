@@ -128,15 +128,11 @@ class PrerequisiteService:
                 )
 
                 if not trace_result.gaps:
-                    logger.warning(f"No prerequisite gaps returned for event {event.id}, creating baseline gap.")
-                    trace_result.gaps = [
-                        PrerequisiteTraceItem(
-                            concept_name=f"Foundational concepts for {event.misconception_text[:40]}",
-                            gap_description="Unresolved prerequisite dependency in lecture topic.",
-                            remediation_hint="Review fundamental lecture terminology and examples.",
-                            depth=1,
-                        )
-                    ]
+                    raise AppException(
+                        f"LLM returned no prerequisite knowledge gaps for confusion event {event.id}.",
+                        code="PREREQUISITE_TRACING_FAILED",
+                        status_code=502,
+                    )
 
                 # Generate embeddings for semantic distance calculation
                 # Vector A: Context embedding (lecture misconception & hesitation quote)
@@ -144,12 +140,13 @@ class PrerequisiteService:
                 concept_strs = [f"{g.concept_name}: {g.gap_description}" for g in trace_result.gaps]
 
                 all_texts = [context_str] + concept_strs
-                try:
-                    embeddings = await embedding_provider.embed_texts(all_texts)
-                except Exception as emb_err:
-                    logger.warning(f"Embedding generation failed ({emb_err}), using fallback pseudo-embeddings.")
-                    # Safe fallback numerical vectors if provider key missing or rate-limited in dev
-                    embeddings = [[0.1 * (k + 1) for k in range(64)] for _ in all_texts]
+                embeddings = await embedding_provider.embed_texts(all_texts)
+                if not embeddings or len(embeddings) != len(all_texts):
+                    raise AppException(
+                        f"Embedding provider returned invalid embedding count for event {event.id}.",
+                        code="EMBEDDING_FAILED",
+                        status_code=502,
+                    )
 
                 context_embedding = embeddings[0]
                 concept_embeddings = embeddings[1:]

@@ -223,36 +223,11 @@ class StudentCatchUpService:
             )
 
             if not response.modules:
-                logger.warning(f"LLM returned empty catch-up modules for lecture {lecture_id}, injecting fallback.")
-                response.modules = [
-                    LLMStudentCatchUpModule(
-                        title=f"Core Catch-Up: {lecture.title}",
-                        summary="This module unpacks the foundational principles covered in the lecture, clarifying common stumbling points step by step.",
-                        concrete_analogy="Think of building understanding like constructing an arch: each stone leans on its neighbor until the keystone locks everything in place.",
-                        key_takeaways=[
-                            "Review prerequisite concepts before tackling compound operations.",
-                            "Break complex equations down into single-variable transformations.",
-                            "Test your intuition against simple edge cases.",
-                        ],
-                        quiz_questions=[
-                            {
-                                "question": "What is the primary mental model needed to master this topic?",
-                                "options": [
-                                    "Isolating fundamental steps before combining them",
-                                    "Memorizing final formulas without checking assumptions",
-                                    "Skipping prerequisite validation",
-                                    "Assuming linear behavior for all non-linear systems",
-                                ],
-                                "correct_option_index": 0,
-                                "hints": [
-                                    {"step": 1, "hint": "Think about how complex procedures are constructed from basic steps."},
-                                    {"step": 2, "hint": "Avoid memorization traps—look for foundational building blocks."},
-                                ],
-                                "explanation": "Breaking complex procedures into isolated steps allows you to verify each intermediate state without cognitive overload.",
-                            }
-                        ],
-                    )
-                ]
+                raise AppException(
+                    f"LLM returned no student catch-up modules for lecture {lecture_id}.",
+                    code="STUDENT_CATCHUP_FAILED",
+                    status_code=502,
+                )
 
             if job_id:
                 await JobService.update_job_progress(job_id, 75, db)
