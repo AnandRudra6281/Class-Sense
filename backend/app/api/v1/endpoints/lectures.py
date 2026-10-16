@@ -14,16 +14,18 @@ from app.core.errors import MediaProcessingError, ResourceNotFoundError
 from app.models.confusion import ConfusionEvent
 from app.models.evidence import Evidence
 from app.models.lecture import Lecture
+from app.models.misconception import Misconception
 from app.models.topic import Topic
 from app.models.transcript import TranscriptSegment
 from app.schemas.common import ApiResponse
-from app.schemas.domain import ConfusionEventSchema, EvidenceSchema
+from app.schemas.domain import ConfusionEventSchema, EvidenceSchema, MisconceptionSchema
 from app.schemas.lecture import (
     ConfusionAnalysisJobResponse,
     IngestJobResponse,
     LectureCreate,
     LectureDetailResponse,
     LectureResponse,
+    MisconceptionExtractionJobResponse,
     TopicSegmentationJobResponse,
     TranscribeRequest,
     TranscribeResponse,
@@ -34,6 +36,7 @@ from app.schemas.transcript import TranscriptSegmentSchema
 from app.services.confusion_service import confusion_service
 from app.services.coordinates import compute_coordinates
 from app.services.ingestion_service import ingestion_service
+from app.services.misconception_service import misconception_service
 from app.services.topic_segmentation_service import topic_segmentation_service
 from app.services.transcription_service import transcription_service
 from app.services.youtube_downloader import youtube_downloader
@@ -358,3 +361,44 @@ async def get_lecture_evidence(lecture_id: str, db: AsyncSession = Depends(get_d
     res = await db.execute(stmt)
     evidence_items = res.scalars().all()
     return ApiResponse(data=[EvidenceSchema.model_validate(ev) for ev in evidence_items])
+
+
+@router.post("/{lecture_id}/extract-misconceptions", response_model=ApiResponse[MisconceptionExtractionJobResponse])
+async def trigger_misconception_extraction(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers structured LLM diagnostic extraction of student misconceptions and root cause prerequisite gaps.
+    """
+    job = await misconception_service.create_extraction_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(misconception_service.run_misconception_pipeline, job.id)
+    return ApiResponse(
+        data=MisconceptionExtractionJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/misconceptions", response_model=ApiResponse[List[MisconceptionSchema]])
+async def get_lecture_misconceptions(lecture_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Retrieve all diagnosed student misconceptions and root cause gaps for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = (
+        select(Misconception)
+        .join(ConfusionEvent, Misconception.confusion_id == ConfusionEvent.id)
+        .where(ConfusionEvent.lecture_id == lecture_id)
+        .order_by(ConfusionEvent.timestamp_start.asc(), Misconception.cognitive_load_score.desc())
+    )
+    res = await db.execute(stmt)
+    misconceptions = res.scalars().all()
+    return ApiResponse(data=[MisconceptionSchema.model_validate(m) for m in misconceptions])

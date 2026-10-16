@@ -75,3 +75,9 @@ class ConfusionAnalysisJobResponse(BaseModel):
     status: str
 
 
+class MisconceptionExtractionJobResponse(BaseModel):
+    job_id: str
+    lecture_id: str
+    status: str
+
+

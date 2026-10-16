@@ -1,5 +1,5 @@
 import { request } from '../api/client';
-import { ConfusionEvent, Evidence, Lecture, LectureDetail, Topic, TranscriptSegment } from '../types';
+import { ConfusionEvent, Evidence, Lecture, LectureDetail, Misconception, Topic, TranscriptSegment } from '../types';
 
 export interface IngestJobResponse {
   lecture_id: string;
@@ -107,5 +107,15 @@ export const lectureService = {
 
   async getEvidence(lectureId: string): Promise<Evidence[]> {
     return request<Evidence[]>(`/lectures/${lectureId}/evidence`);
+  },
+
+  async extractMisconceptions(lectureId: string): Promise<JobTriggerResponse> {
+    return request<JobTriggerResponse>(`/lectures/${lectureId}/extract-misconceptions`, {
+      method: 'POST',
+    });
+  },
+
+  async getMisconceptions(lectureId: string): Promise<Misconception[]> {
+    return request<Misconception[]>(`/lectures/${lectureId}/misconceptions`);
   },
 };

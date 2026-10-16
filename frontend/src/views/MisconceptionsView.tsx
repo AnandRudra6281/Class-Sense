@@ -1,81 +1,314 @@
-import React from 'react';
-import { AlertOctagon, GitBranch } from 'lucide-react';
-import { Card, Badge } from '../components/ui';
-import { Misconception, Coordinates3D } from '../types';
+import React, { useEffect, useState } from 'react';
+import {
+  AlertOctagon,
+  GitBranch,
+  RefreshCw,
+  Sparkles,
+  AlertTriangle,
+  ArrowRight,
+  BrainCircuit,
+} from 'lucide-react';
+import { Card, Badge, Alert, Button, Progress } from '../components/ui';
+import { lectureService } from '../services/lectureService';
+import { useJobPolling } from '../hooks/useJobPolling';
+import { ConfusionEvent, Lecture, Misconception, ViewId } from '../types';
 
-export const MisconceptionsView: React.FC = () => {
-  const dummyMisconceptions: Misconception[] = [
-    {
-      id: 'misc-1',
-      confusion_id: 'conf-1',
-      name: 'Confusing Local Derivative with Total Gradient',
-      explanation: 'Students assume scalar partial derivative handles multi-dimensional tensor backpropagation automatically.',
-      apparent_reason: 'Missing prerequisite in vector/matrix multivariable calculus.',
-      severity: 'critical',
-      cognitive_load_score: 8.8,
-      coordinates: { x: 35.0, y: 88.0, z: 1.0 } as Coordinates3D,
-    },
-    {
-      id: 'misc-2',
-      confusion_id: 'conf-2',
-      name: 'Conflating Learning Rate with Step Size',
-      explanation: 'Students believe larger learning rates always guarantee faster monotonic loss decrease.',
-      apparent_reason: 'Intuition from 1D linear systems wrongly applied to non-convex loss surfaces.',
-      severity: 'high',
-      cognitive_load_score: 7.2,
-      coordinates: { x: 70.0, y: 65.0, z: 2.0 } as Coordinates3D,
-    },
-  ];
+interface MisconceptionsViewProps {
+  onNavigate?: (view: ViewId) => void;
+}
+
+export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNavigate }) => {
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [selectedLectureId, setSelectedLectureId] = useState<string | null>(null);
+  const [misconceptions, setMisconceptions] = useState<Misconception[]>([]);
+  const [confusionEvents, setConfusionEvents] = useState<ConfusionEvent[]>([]);
+  const [isLoadingLectures, setIsLoadingLectures] = useState(true);
+  const [isLoadingMisconceptions, setIsLoadingMisconceptions] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Background Job Polling
+  const { status: jobStatus, progress: jobProgress, error: jobError } = useJobPolling(activeJobId);
+
+  // Load lectures on mount
+  useEffect(() => {
+    async function loadLectures() {
+      try {
+        setIsLoadingLectures(true);
+        const data = await lectureService.listLectures();
+        setLectures(data);
+        if (data.length > 0 && !selectedLectureId) {
+          setSelectedLectureId(data[0].id);
+        }
+      } catch (err: unknown) {
+        setActionError(err instanceof Error ? err.message : 'Failed to load lectures.');
+      } finally {
+        setIsLoadingLectures(false);
+      }
+    }
+    loadLectures();
+  }, []);
+
+  // Load misconceptions and confusion events when lecture changes or extraction finishes
+  useEffect(() => {
+    if (!selectedLectureId) return;
+
+    async function loadData() {
+      try {
+        setIsLoadingMisconceptions(true);
+        setActionError(null);
+
+        const [mRes, cRes] = await Promise.allSettled([
+          lectureService.getMisconceptions(selectedLectureId!),
+          lectureService.getConfusionEvents(selectedLectureId!),
+        ]);
+
+        if (mRes.status === 'fulfilled') {
+          setMisconceptions(mRes.value);
+        } else {
+          setMisconceptions([]);
+        }
+
+        if (cRes.status === 'fulfilled') {
+          setConfusionEvents(cRes.value);
+        } else {
+          setConfusionEvents([]);
+        }
+      } finally {
+        setIsLoadingMisconceptions(false);
+      }
+    }
+    loadData();
+  }, [selectedLectureId, jobStatus]);
+
+  const selectedLecture = lectures.find((l) => l.id === selectedLectureId);
+
+  const handleStartExtraction = async () => {
+    if (!selectedLectureId) return;
+    try {
+      setActionError(null);
+      const res = await lectureService.extractMisconceptions(selectedLectureId);
+      setActiveJobId(res.job_id);
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Failed to start misconception extraction.');
+    }
+  };
+
+  const confusionMap = new Map<string, ConfusionEvent>(
+    confusionEvents.map((e) => [e.id, e])
+  );
+
+  const criticalCount = misconceptions.filter((m) => m.severity === 'critical').length;
+  const highCount = misconceptions.filter((m) => m.severity === 'high').length;
 
   return (
     <div className="space-y-6" data-testid="view-misconceptions">
+      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs font-semibold tracking-wider text-indigo-400 uppercase">Cognitive Diagnostics</span>
-            <Badge variant="indigo" size="sm">Vector Root Traced</Badge>
+            <span className="text-xs font-semibold tracking-wider text-indigo-400 uppercase">Phase 4 Cognitive Diagnostics</span>
+            <Badge variant="indigo" size="sm">Structured LLM Reasoning</Badge>
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
             <AlertOctagon className="w-6 h-6 text-rose-400" />
             Extracted Misconceptions & Root Causes
           </h1>
           <p className="text-slate-400 text-sm mt-1">
-            Synthesized cognitive obstacles linked to ChromaDB prerequisite embeddings.
+            Synthesized mental model failures, cognitive load metrics, and root cause prerequisite gaps grounded in empirical hesitation signals.
           </p>
         </div>
+
+        {lectures.length > 0 && (
+          <div className="flex items-center gap-2.5">
+            <select
+              value={selectedLectureId || ''}
+              onChange={(e) => setSelectedLectureId(e.target.value)}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 focus:outline-none focus:border-indigo-500 max-w-xs truncate"
+              data-testid="misconception-lecture-select"
+            >
+              {lectures.map((lec) => (
+                <option key={lec.id} value={lec.id}>
+                  {lec.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      <div className="space-y-4">
-        {dummyMisconceptions.map((m) => (
-          <Card key={m.id} className="space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Badge variant={m.severity} size="sm">
-                  {m.severity.toUpperCase()} SEVERITY
-                </Badge>
-                <h3 className="text-base font-semibold text-white">{m.name}</h3>
+      {actionError && (
+        <Alert severity="critical" title="Diagnostic Extraction Error">
+          {actionError}
+        </Alert>
+      )}
+
+      {isLoadingLectures ? (
+        <div className="py-12 text-center text-sm text-slate-400">
+          <RefreshCw className="w-6 h-6 animate-spin mx-auto text-indigo-400 mb-2" />
+          Loading lectures...
+        </div>
+      ) : lectures.length === 0 ? (
+        <Card className="text-center py-12 space-y-4">
+          <BrainCircuit className="w-12 h-12 text-slate-600 mx-auto" />
+          <div>
+            <h3 className="text-base font-semibold text-white">No Lectures Available</h3>
+            <p className="text-xs text-slate-400 mt-1">Ingest and analyze a lecture first to extract misconceptions.</p>
+          </div>
+          {onNavigate && (
+            <Button variant="primary" size="md" onClick={() => onNavigate('upload')}>
+              Go to Ingestion View
+            </Button>
+          )}
+        </Card>
+      ) : (
+        <div className="space-y-6">
+          {/* Lecture Diagnostic Controls Card */}
+          <Card className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-white">{selectedLecture?.title}</h3>
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1">
+                  <span>Misconceptions: <strong className="text-rose-400">{misconceptions.length}</strong></span>
+                  <span>&bull;</span>
+                  <span>Critical Severity: <strong className="text-red-400">{criticalCount}</strong></span>
+                  <span>&bull;</span>
+                  <span>High Severity: <strong className="text-amber-400">{highCount}</strong></span>
+                  <span>&bull;</span>
+                  <span>Confusion Signals: <strong className="text-indigo-400">{confusionEvents.length}</strong></span>
+                </div>
               </div>
-              <Badge variant="default" size="sm">
-                Coord: ({m.coordinates.x}, {m.coordinates.y}, {m.coordinates.z})
-              </Badge>
+
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleStartExtraction}
+                isLoading={Boolean(activeJobId && jobStatus === 'running')}
+                disabled={Boolean(activeJobId && jobStatus === 'running') || confusionEvents.length === 0}
+                title={confusionEvents.length === 0 ? 'Analyze signals first' : 'Diagnose student misconceptions with LLM'}
+              >
+                <Sparkles className="w-3.5 h-3.5 mr-1 inline" /> Extract Misconceptions
+              </Button>
             </div>
 
-            <p className="text-slate-300 text-sm leading-relaxed">{m.explanation}</p>
-
-            <div className="p-3 bg-slate-950/50 border border-slate-800/80 rounded-xl space-y-1">
-              <span className="text-xs font-semibold text-amber-400 flex items-center gap-1">
-                <GitBranch className="w-3.5 h-3.5" /> Root Prerequisite Gap:
-              </span>
-              <p className="text-xs text-slate-300">{m.apparent_reason}</p>
-            </div>
-
-            <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
-              <span>Cognitive Load Score: <strong className="text-white">{m.cognitive_load_score} / 10</strong></span>
-              <span>Confusion Node ID: {m.confusion_id}</span>
-            </div>
+            {/* Active Extraction Progress Bar */}
+            {activeJobId && (
+              <div className="pt-2 border-t border-slate-800/80 space-y-2" data-testid="misconception-progress">
+                <div className="flex justify-between text-xs text-slate-300">
+                  <span className="flex items-center gap-1.5">
+                    <RefreshCw className={`w-3.5 h-3.5 ${jobStatus === 'running' ? 'animate-spin text-rose-400' : ''}`} />
+                    Diagnostic Status: <strong className="uppercase">{jobStatus || 'Running'}</strong>
+                  </span>
+                  <span>{jobProgress}%</span>
+                </div>
+                <Progress
+                  value={jobProgress}
+                  severity={jobStatus === 'done' ? 'low' : jobStatus === 'failed' ? 'critical' : 'high'}
+                />
+                {jobStatus === 'done' && (
+                  <Alert severity="low" title="Diagnostic Extraction Completed">
+                    Diagnosed student misconceptions with root cause prerequisite links and 3D coordinates.
+                  </Alert>
+                )}
+                {jobStatus === 'failed' && (
+                  <Alert severity="critical" title="Diagnostic Job Failed">
+                    {jobError || 'Failed to extract misconceptions.'}
+                  </Alert>
+                )}
+              </div>
+            )}
           </Card>
-        ))}
-      </div>
+
+          {/* Misconceptions List */}
+          {isLoadingMisconceptions ? (
+            <div className="py-8 text-center text-sm text-slate-400">
+              <RefreshCw className="w-5 h-5 animate-spin mx-auto text-indigo-400 mb-1.5" />
+              Loading diagnosed misconceptions...
+            </div>
+          ) : misconceptions.length === 0 ? (
+            <Card className="text-center py-8 text-sm text-slate-400 space-y-3">
+              <p>No student misconceptions extracted yet for this lecture.</p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleStartExtraction}
+                disabled={confusionEvents.length === 0}
+              >
+                <Sparkles className="w-3.5 h-3.5 mr-1 inline text-indigo-400" /> Diagnose Misconceptions Now
+              </Button>
+            </Card>
+          ) : (
+            <div className="space-y-4" data-testid="misconceptions-list">
+              {misconceptions.map((m) => {
+                const linkedEvent = confusionMap.get(m.confusion_id);
+                const loadPercent = Math.round(m.cognitive_load_score * 100);
+
+                return (
+                  <Card key={m.id} className="space-y-3 p-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant={m.severity} size="sm">
+                          {m.severity.toUpperCase()} SEVERITY
+                        </Badge>
+                        <h3 className="text-base font-semibold text-white">{m.name}</h3>
+                      </div>
+                      <Badge variant="default" size="sm">
+                        Coord: ({m.coordinates?.x?.toFixed(1) ?? 0}, {m.coordinates?.y?.toFixed(1) ?? 0}, {m.coordinates?.z?.toFixed(1) ?? 0})
+                      </Badge>
+                    </div>
+
+                    <p className="text-slate-200 text-sm leading-relaxed">{m.explanation}</p>
+
+                    {/* Root Prerequisite Gap Callout */}
+                    <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl space-y-1">
+                      <span className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                        <GitBranch className="w-3.5 h-3.5" /> Root Prerequisite Gap & Flawed Intuition:
+                      </span>
+                      <p className="text-xs text-slate-300 leading-relaxed">{m.apparent_reason}</p>
+                    </div>
+
+                    {/* Grounding Confusion Quote Preview */}
+                    {linkedEvent && linkedEvent.evidence_text && (
+                      <div className="text-xs text-slate-400 bg-slate-950/30 p-2 rounded-lg border border-slate-800/60 flex items-start gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+                        <span className="italic">&ldquo;{linkedEvent.evidence_text}&rdquo;</span>
+                      </div>
+                    )}
+
+                    {/* Cognitive Load Bar & Footer */}
+                    <div className="pt-2 border-t border-slate-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-2 flex-1 max-w-xs">
+                        <span className="text-slate-400">Cognitive Load:</span>
+                        <div className="flex-1">
+                          <Progress
+                            value={loadPercent}
+                            severity={loadPercent > 80 ? 'critical' : loadPercent > 60 ? 'high' : 'medium'}
+                          />
+                        </div>
+                        <span className={`font-mono font-semibold ${loadPercent > 80 ? 'text-red-400' : 'text-slate-200'}`}>
+                          {loadPercent}%
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-[11px] text-slate-500">Node: {m.confusion_id.slice(0, 8)}</span>
+                        {onNavigate && (
+                          <button
+                            onClick={() => onNavigate('student')}
+                            className="text-xs text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1"
+                          >
+                            Generate Catch-Up Plan <ArrowRight className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
