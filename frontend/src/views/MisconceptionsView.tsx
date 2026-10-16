@@ -11,7 +11,7 @@ import {
 import { Card, Badge, Alert, Button, Progress } from '../components/ui';
 import { lectureService } from '../services/lectureService';
 import { useJobPolling } from '../hooks/useJobPolling';
-import { ConfusionEvent, Lecture, Misconception, ViewId } from '../types';
+import { ConfusionEvent, Lecture, Misconception, PrerequisiteNode, ViewId } from '../types';
 
 interface MisconceptionsViewProps {
   onNavigate?: (view: ViewId) => void;
@@ -22,6 +22,7 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
   const [selectedLectureId, setSelectedLectureId] = useState<string | null>(null);
   const [misconceptions, setMisconceptions] = useState<Misconception[]>([]);
   const [confusionEvents, setConfusionEvents] = useState<ConfusionEvent[]>([]);
+  const [prerequisites, setPrerequisites] = useState<PrerequisiteNode[]>([]);
   const [isLoadingLectures, setIsLoadingLectures] = useState(true);
   const [isLoadingMisconceptions, setIsLoadingMisconceptions] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -58,9 +59,10 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
         setIsLoadingMisconceptions(true);
         setActionError(null);
 
-        const [mRes, cRes] = await Promise.allSettled([
+        const [mRes, cRes, pRes] = await Promise.allSettled([
           lectureService.getMisconceptions(selectedLectureId!),
           lectureService.getConfusionEvents(selectedLectureId!),
+          lectureService.getPrerequisites(selectedLectureId!),
         ]);
 
         if (mRes.status === 'fulfilled') {
@@ -73,6 +75,12 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
           setConfusionEvents(cRes.value);
         } else {
           setConfusionEvents([]);
+        }
+
+        if (pRes.status === 'fulfilled') {
+          setPrerequisites(pRes.value);
+        } else {
+          setPrerequisites([]);
         }
       } finally {
         setIsLoadingMisconceptions(false);
@@ -94,9 +102,27 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
     }
   };
 
+  const handleStartPrerequisiteTracing = async () => {
+    if (!selectedLectureId) return;
+    try {
+      setActionError(null);
+      const res = await lectureService.tracePrerequisites(selectedLectureId);
+      setActiveJobId(res.job_id);
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Failed to start prerequisite tracing.');
+    }
+  };
+
   const confusionMap = new Map<string, ConfusionEvent>(
     confusionEvents.map((e) => [e.id, e])
   );
+
+  const prereqMap = new Map<string, PrerequisiteNode[]>();
+  prerequisites.forEach((p) => {
+    const list = prereqMap.get(p.confusion_id) || [];
+    list.push(p);
+    prereqMap.set(p.confusion_id, list);
+  });
 
   const criticalCount = misconceptions.filter((m) => m.severity === 'critical').length;
   const highCount = misconceptions.filter((m) => m.severity === 'high').length;
@@ -171,6 +197,8 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                 <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1">
                   <span>Misconceptions: <strong className="text-rose-400">{misconceptions.length}</strong></span>
                   <span>&bull;</span>
+                  <span>Prerequisites: <strong className="text-emerald-400">{prerequisites.length}</strong></span>
+                  <span>&bull;</span>
                   <span>Critical Severity: <strong className="text-red-400">{criticalCount}</strong></span>
                   <span>&bull;</span>
                   <span>High Severity: <strong className="text-amber-400">{highCount}</strong></span>
@@ -179,16 +207,30 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                 </div>
               </div>
 
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleStartExtraction}
-                isLoading={Boolean(activeJobId && jobStatus === 'running')}
-                disabled={Boolean(activeJobId && jobStatus === 'running') || confusionEvents.length === 0}
-                title={confusionEvents.length === 0 ? 'Analyze signals first' : 'Diagnose student misconceptions with LLM'}
-              >
-                <Sparkles className="w-3.5 h-3.5 mr-1 inline" /> Extract Misconceptions
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleStartPrerequisiteTracing}
+                  isLoading={Boolean(activeJobId && jobStatus === 'running')}
+                  disabled={Boolean(activeJobId && jobStatus === 'running') || confusionEvents.length === 0}
+                  title={confusionEvents.length === 0 ? 'Analyze signals first' : 'Trace missing prerequisite knowledge graph with ChromaDB'}
+                  data-testid="trace-prerequisites-btn"
+                >
+                  <GitBranch className="w-3.5 h-3.5 mr-1 inline text-emerald-400" /> Trace Prerequisites
+                </Button>
+
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleStartExtraction}
+                  isLoading={Boolean(activeJobId && jobStatus === 'running')}
+                  disabled={Boolean(activeJobId && jobStatus === 'running') || confusionEvents.length === 0}
+                  title={confusionEvents.length === 0 ? 'Analyze signals first' : 'Diagnose student misconceptions with LLM'}
+                >
+                  <Sparkles className="w-3.5 h-3.5 mr-1 inline" /> Extract Misconceptions
+                </Button>
+              </div>
             </div>
 
             {/* Active Extraction Progress Bar */}
@@ -241,6 +283,7 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
             <div className="space-y-4" data-testid="misconceptions-list">
               {misconceptions.map((m) => {
                 const linkedEvent = confusionMap.get(m.confusion_id);
+                const linkedPrereqs = prereqMap.get(m.confusion_id) || [];
                 const loadPercent = Math.round(m.cognitive_load_score * 100);
 
                 return (
@@ -266,6 +309,59 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                       </span>
                       <p className="text-xs text-slate-300 leading-relaxed">{m.apparent_reason}</p>
                     </div>
+
+                    {/* Traced Prerequisite Nodes via Vector Retrieval */}
+                    {linkedPrereqs.length > 0 && (
+                      <div className="space-y-2 pt-2 border-t border-slate-800/60" data-testid="prerequisite-nodes-list">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5 uppercase tracking-wider">
+                            <GitBranch className="w-3.5 h-3.5" /> Traced Upstream Prerequisites (Vector Retrieval):
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-mono">
+                            {linkedPrereqs.length} foundation{linkedPrereqs.length > 1 ? 's' : ''}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                          {linkedPrereqs.map((p) => (
+                            <div
+                              key={p.id}
+                              className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-3 space-y-1.5 text-xs"
+                              data-testid={`prereq-node-${p.id}`}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                <div className="flex items-center gap-2">
+                                  <Badge
+                                    variant={p.depth === 1 ? 'critical' : p.depth === 2 ? 'high' : 'medium'}
+                                    size="sm"
+                                  >
+                                    Depth {p.depth}: {p.depth === 1 ? 'Direct Gap' : p.depth === 2 ? 'Foundational' : 'Primer'}
+                                  </Badge>
+                                  <strong className="text-slate-100 font-semibold">{p.concept_name}</strong>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="default" size="sm">
+                                    Vector Dist: {p.vector_distance?.toFixed(3) ?? '0.000'}
+                                  </Badge>
+                                  <Badge variant="default" size="sm">
+                                    Coord: ({p.coordinates?.x?.toFixed(1) ?? 0}, {p.coordinates?.y?.toFixed(1) ?? 0}, {p.coordinates?.z?.toFixed(1) ?? 0})
+                                  </Badge>
+                                </div>
+                              </div>
+
+                              <p className="text-slate-300 leading-relaxed">{p.gap_description}</p>
+
+                              {p.remediation_hint && (
+                                <div className="text-[11px] text-indigo-300 bg-indigo-950/30 border border-indigo-900/40 rounded p-1.5 flex items-start gap-1.5">
+                                  <Sparkles className="w-3 h-3 text-indigo-400 shrink-0 mt-0.5" />
+                                  <span><strong className="text-indigo-200">Remediation:</strong> {p.remediation_hint}</span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Grounding Confusion Quote Preview */}
                     {linkedEvent && linkedEvent.evidence_text && (

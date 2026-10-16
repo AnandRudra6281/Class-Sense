@@ -15,10 +15,16 @@ from app.models.confusion import ConfusionEvent
 from app.models.evidence import Evidence
 from app.models.lecture import Lecture
 from app.models.misconception import Misconception
+from app.models.prerequisite import PrerequisiteNode
 from app.models.topic import Topic
 from app.models.transcript import TranscriptSegment
 from app.schemas.common import ApiResponse
-from app.schemas.domain import ConfusionEventSchema, EvidenceSchema, MisconceptionSchema
+from app.schemas.domain import (
+    ConfusionEventSchema,
+    EvidenceSchema,
+    MisconceptionSchema,
+    PrerequisiteNodeSchema,
+)
 from app.schemas.lecture import (
     ConfusionAnalysisJobResponse,
     IngestJobResponse,
@@ -26,6 +32,7 @@ from app.schemas.lecture import (
     LectureDetailResponse,
     LectureResponse,
     MisconceptionExtractionJobResponse,
+    PrerequisiteTracingJobResponse,
     TopicSegmentationJobResponse,
     TranscribeRequest,
     TranscribeResponse,
@@ -37,6 +44,7 @@ from app.services.confusion_service import confusion_service
 from app.services.coordinates import compute_coordinates
 from app.services.ingestion_service import ingestion_service
 from app.services.misconception_service import misconception_service
+from app.services.prerequisite_service import prerequisite_service
 from app.services.topic_segmentation_service import topic_segmentation_service
 from app.services.transcription_service import transcription_service
 from app.services.youtube_downloader import youtube_downloader
@@ -402,3 +410,44 @@ async def get_lecture_misconceptions(lecture_id: str, db: AsyncSession = Depends
     res = await db.execute(stmt)
     misconceptions = res.scalars().all()
     return ApiResponse(data=[MisconceptionSchema.model_validate(m) for m in misconceptions])
+
+
+@router.post("/{lecture_id}/trace-prerequisites", response_model=ApiResponse[PrerequisiteTracingJobResponse])
+async def trigger_prerequisite_tracing(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers structured LLM and vector retrieval prerequisite tracing for a lecture's confusion events.
+    """
+    job = await prerequisite_service.create_tracing_job(db=db, lecture_id=lecture_id)
+    background_tasks.add_task(prerequisite_service.run_prerequisite_pipeline, job.id)
+    return ApiResponse(
+        data=PrerequisiteTracingJobResponse(
+            job_id=job.id,
+            lecture_id=lecture_id,
+            status=job.status,
+        )
+    )
+
+
+@router.get("/{lecture_id}/prerequisites", response_model=ApiResponse[List[PrerequisiteNodeSchema]])
+async def get_lecture_prerequisites(lecture_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Retrieve all traced prerequisite knowledge graph nodes for a lecture.
+    """
+    stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
+    res_lec = await db.execute(stmt_lec)
+    if not res_lec.scalar_one_or_none():
+        raise ResourceNotFoundError("Lecture", lecture_id)
+
+    stmt = (
+        select(PrerequisiteNode)
+        .join(ConfusionEvent, PrerequisiteNode.confusion_id == ConfusionEvent.id)
+        .where(ConfusionEvent.lecture_id == lecture_id)
+        .order_by(ConfusionEvent.timestamp_start.asc(), PrerequisiteNode.depth.asc())
+    )
+    res = await db.execute(stmt)
+    nodes = res.scalars().all()
+    return ApiResponse(data=[PrerequisiteNodeSchema.model_validate(n) for n in nodes])

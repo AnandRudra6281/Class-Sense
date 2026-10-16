@@ -9,7 +9,9 @@ vi.mock('../services/lectureService', () => ({
     listLectures: vi.fn(),
     getMisconceptions: vi.fn(),
     getConfusionEvents: vi.fn(),
+    getPrerequisites: vi.fn().mockResolvedValue([]),
     extractMisconceptions: vi.fn(),
+    tracePrerequisites: vi.fn(),
   },
 }));
 
@@ -72,6 +74,7 @@ describe('Phase 4 MisconceptionsView Tests', () => {
     (lectureService.listLectures as any).mockResolvedValue(mockLectures);
     (lectureService.getMisconceptions as any).mockResolvedValue(mockMisconceptions);
     (lectureService.getConfusionEvents as any).mockResolvedValue(mockConfusionEvents);
+    (lectureService.getPrerequisites as any).mockResolvedValue([]);
 
     render(<MisconceptionsView />);
 
@@ -96,6 +99,7 @@ describe('Phase 4 MisconceptionsView Tests', () => {
     (lectureService.listLectures as any).mockResolvedValue(mockLectures);
     (lectureService.getMisconceptions as any).mockResolvedValue(mockMisconceptions);
     (lectureService.getConfusionEvents as any).mockResolvedValue(mockConfusionEvents);
+    (lectureService.getPrerequisites as any).mockResolvedValue([]);
     (lectureService.extractMisconceptions as any).mockResolvedValue({
       job_id: 'job-misc-401',
       lecture_id: 'lec-401',
