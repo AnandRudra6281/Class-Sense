@@ -26,9 +26,9 @@ export const App: React.FC = () => {
       case 'dashboard':
         return <DashboardView />;
       case 'library':
-        return <LibraryView />;
+        return <LibraryView onNavigate={navigateTo} />;
       case 'upload':
-        return <UploadView />;
+        return <UploadView onNavigate={navigateTo} />;
       case 'analysis':
         return <AnalysisView />;
       case 'evidence':

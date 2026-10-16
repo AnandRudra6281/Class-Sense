@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import {
   LandingView,
   DashboardView,
@@ -26,10 +26,12 @@ describe('All 10 Platform Views Smoke Test', () => {
     expect(screen.getByText(/Instructor Cockpit/i)).toBeInTheDocument();
   });
 
-  it('3. renders LibraryView', () => {
+  it('3. renders LibraryView', async () => {
     render(<LibraryView />);
-    expect(screen.getByTestId('view-library')).toBeInTheDocument();
-    expect(screen.getByText(/Lecture Library/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('view-library')).toBeInTheDocument();
+      expect(screen.getByText(/Lecture Library/i)).toBeInTheDocument();
+    });
   });
 
   it('4. renders UploadView', () => {

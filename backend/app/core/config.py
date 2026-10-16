@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Field(default_factory=lambda: Path("./uploads"))
     CHROMA_PERSIST_DIR: Path = Field(default_factory=lambda: Path("./chroma_db"))
 
+    @property
+    def raw_upload_dir(self) -> Path:
+        p = self.UPLOAD_DIR / "raw"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def audio_upload_dir(self) -> Path:
+        p = self.UPLOAD_DIR / "audio"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
     # Mistral AI
     MISTRAL_API_KEY: str = ""
     MISTRAL_LLM_MODEL: str = "mistral-large-latest"

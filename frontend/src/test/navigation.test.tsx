@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '../App';
 
 describe('App Navigation and Layout Smoke Tests', () => {
@@ -9,13 +9,13 @@ describe('App Navigation and Layout Smoke Tests', () => {
     expect(screen.getByText('Instructor Cockpit')).toBeInTheDocument();
   });
 
-  it('navigates to different views when clicking sidebar navigation links', () => {
+  it('navigates to different views when clicking sidebar navigation links', async () => {
     render(<App />);
 
     // Click Lecture Library
     const libraryButtons = screen.getAllByRole('button', { name: /lecture library/i });
     fireEvent.click(libraryButtons[0]);
-    expect(screen.getByTestId('view-library')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('view-library')).toBeInTheDocument());
 
     // Click Ingest Lecture
     const uploadButtons = screen.getAllByRole('button', { name: /ingest lecture/i });

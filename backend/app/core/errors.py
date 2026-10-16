@@ -82,6 +82,26 @@ class ResourceNotFoundError(AppException):
         )
 
 
+class MediaProcessingError(AppException):
+    def __init__(self, message: str, details: Optional[Any] = None):
+        super().__init__(
+            message=message,
+            code="MEDIA_PROCESSING_ERROR",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details=details,
+        )
+
+
+class AudioExtractionError(AppException):
+    def __init__(self, message: str, details: Optional[Any] = None):
+        super().__init__(
+            message=message,
+            code="AUDIO_EXTRACTION_ERROR",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            details=details,
+        )
+
+
 def build_error_response(status_code: int, code: str, message: str, details: Optional[Any] = None) -> JSONResponse:
     envelope = ErrorEnvelope(
         success=False,

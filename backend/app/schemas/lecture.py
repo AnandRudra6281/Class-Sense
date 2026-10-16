@@ -38,3 +38,16 @@ class LectureDetailResponse(LectureResponse):
     interventions: List[InterventionSchema] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class YouTubeIngestRequest(BaseModel):
+    url: str
+    title: Optional[str] = None
+
+
+class IngestJobResponse(BaseModel):
+    lecture_id: str
+    job_id: str
+    status: str
+    title: str
+

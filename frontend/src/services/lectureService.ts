@@ -1,6 +1,18 @@
 import { request } from '../api/client';
 import { Lecture, LectureDetail } from '../types';
 
+export interface IngestJobResponse {
+  lecture_id: string;
+  job_id: string;
+  status: string;
+  title: string;
+}
+
+export interface YouTubeIngestPayload {
+  url: string;
+  title?: string;
+}
+
 export interface CreateLecturePayload {
   title: string;
   source_type: 'upload' | 'youtube';
@@ -14,6 +26,32 @@ export const lectureService = {
 
   async getLectureDetail(lectureId: string): Promise<LectureDetail> {
     return request<LectureDetail>(`/lectures/${lectureId}`);
+  },
+
+  async uploadLectureMedia(file: File, title?: string): Promise<IngestJobResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (title && title.trim()) {
+      formData.append('title', title.trim());
+    }
+
+    return request<IngestJobResponse>('/lectures/upload', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
+  async ingestYouTubeLecture(payload: YouTubeIngestPayload): Promise<IngestJobResponse> {
+    return request<IngestJobResponse>('/lectures/youtube', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteLecture(lectureId: string): Promise<{ deleted: boolean; lecture_id: string }> {
+    return request<{ deleted: boolean; lecture_id: string }>(`/lectures/${lectureId}`, {
+      method: 'DELETE',
+    });
   },
 
   async createLecture(payload: CreateLecturePayload): Promise<Lecture> {
