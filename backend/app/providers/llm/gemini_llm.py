@@ -1,12 +1,15 @@
+import asyncio
+import inspect
 import json
 import logging
-from typing import Optional, Type, TypeVar
+from typing import Any, Optional, Type, TypeVar
 from pydantic import BaseModel, ValidationError
 from google import genai
 from google.genai import types
 from app.core.config import settings
 from app.core.errors import LLMValidationError, ProviderDisabledError
 from app.providers.base import LLMProvider
+from app.providers.resilience import execute_with_resilience
 
 logger = logging.getLogger("classsense.llm.gemini")
 
@@ -34,6 +37,31 @@ class GeminiLLMProvider(LLMProvider):
             raise ProviderDisabledError("Gemini LLM", "GEMINI_API_KEY")
         return genai.Client(api_key=settings.GEMINI_API_KEY)
 
+    async def _generate_content(
+        self,
+        client: genai.Client,
+        model: str,
+        contents: Any,
+        config: types.GenerateContentConfig,
+    ):
+        """Call Gemini asynchronously with resilience without blocking the event loop."""
+        async def _call():
+            if hasattr(client, "aio") and hasattr(client.aio, "models"):
+                fn = getattr(client.aio.models, "generate_content", None)
+                if inspect.iscoroutinefunction(fn):
+                    return await fn(model=model, contents=contents, config=config)
+                res = fn(model=model, contents=contents, config=config) if fn else None
+                if inspect.isawaitable(res):
+                    return await res
+            return await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=config,
+            )
+
+        return await execute_with_resilience(_call, call_name=f"gemini_llm.generate_content({model})")
+
     async def generate_text(
         self,
         prompt: str,
@@ -47,11 +75,7 @@ class GeminiLLMProvider(LLMProvider):
             system_instruction=system_prompt if system_prompt else None,
         )
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=config,
-        )
+        response = await self._generate_content(client, model_name, prompt, config)
 
         return response.text or ""
 
@@ -79,12 +103,15 @@ class GeminiLLMProvider(LLMProvider):
             temperature=0.1,
             system_instruction=base_system_prompt,
             response_mime_type="application/json",
+            response_schema=response_model,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
         raw_output = ""
         try:
             logger.info(f"Calling Gemini LLM ({model_name}) with JSON mode for {response_model.__name__}...")
-            response = client.models.generate_content(
+            response = await self._generate_content(
+                client=client,
                 model=model_name,
                 contents=prompt,
                 config=config,
@@ -106,7 +133,8 @@ class GeminiLLMProvider(LLMProvider):
             )
 
             try:
-                retry_response = client.models.generate_content(
+                retry_response = await self._generate_content(
+                    client=client,
                     model=model_name,
                     contents=retry_prompt,
                     config=config,

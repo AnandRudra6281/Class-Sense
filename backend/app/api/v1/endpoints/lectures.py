@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import uuid
@@ -9,9 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+logger = logging.getLogger("classsense.api.lectures")
+
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.errors import MediaProcessingError, ResourceNotFoundError
+from app.core.errors import AppException, MediaProcessingError, ResourceNotFoundError
 from app.models.confusion import ConfusionEvent
 from app.models.evidence import Evidence
 from app.models.intervention import Intervention
@@ -57,6 +60,7 @@ from app.schemas.student import (
     TutorChatRequest,
     TutorChatResponse,
 )
+from app.schemas.job import JobResponse
 from app.schemas.topic import TopicSchema
 from app.schemas.transcript import TranscriptSegmentSchema
 from app.services.confusion_service import confusion_service
@@ -64,6 +68,7 @@ from app.services.coordinates import compute_coordinates
 from app.services.ingestion_service import ingestion_service
 from app.services.intervention_service import intervention_service
 from app.services.misconception_service import misconception_service
+from app.services.pipeline_service import pipeline_service
 from app.services.prerequisite_service import prerequisite_service
 from app.services.report_service import report_service
 from app.services.socratic_tutor_service import socratic_tutor_service
@@ -115,6 +120,7 @@ async def upload_lecture_media(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
+    auto_analyze: bool = Form(False),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -134,21 +140,63 @@ async def upload_lecture_media(
     stored_filename = f"{uuid.uuid4().hex[:12]}_{safe_stem}{ext}"
     target_path = settings.raw_upload_dir / stored_filename
 
-    # Save to disk
+    # Save to disk with streaming size limit enforcement
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    total_bytes = 0
     try:
         with open(target_path, "wb") as buffer:
             while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    buffer.close()
+                    if target_path.exists():
+                        target_path.unlink(missing_ok=True)
+                    raise AppException(
+                        message=f"Uploaded file exceeds maximum allowed size of {settings.MAX_UPLOAD_MB}MB.",
+                        code="PAYLOAD_TOO_LARGE",
+                        status_code=413,
+                        details={"max_upload_mb": settings.MAX_UPLOAD_MB, "bytes_received": total_bytes},
+                    )
                 buffer.write(chunk)
+    except AppException:
+        if target_path.exists():
+            target_path.unlink(missing_ok=True)
+        raise
     except Exception as e:
         if target_path.exists():
-            target_path.unlink()
+            target_path.unlink(missing_ok=True)
         raise MediaProcessingError(f"Failed to write uploaded file to disk: {str(e)}")
 
-    lecture, job = await ingestion_service.create_upload_job(
+    # Verify the file with ffprobe before creating the job and reject non-media
+    from app.services.audio_extractor import AudioExtractor
+    extractor = AudioExtractor()
+    try:
+        metadata = await extractor.probe_metadata(target_path)
+        if not metadata.get("has_audio") and metadata.get("duration_seconds", 0) <= 0:
+            if target_path.exists():
+                target_path.unlink(missing_ok=True)
+            raise AppException(
+                message=f"Uploaded file '{filename}' does not contain valid audio or video streams.",
+                code="NON_MEDIA_FILE",
+                status_code=400,
+                details={"filename": filename},
+            )
+    except MediaProcessingError as mpe:
+        if target_path.exists():
+            target_path.unlink(missing_ok=True)
+        raise AppException(
+            message=f"Uploaded file '{filename}' failed media validation: {str(mpe)}",
+            code="INVALID_MEDIA_FILE",
+            status_code=400,
+            details={"filename": filename, "error": str(mpe)},
+        )
+
+    lecture, job, analyze_job = await ingestion_service.create_upload_job(
         db=db,
         media_path=target_path,
         filename=filename,
         custom_title=title,
+        auto_analyze=auto_analyze,
     )
 
     # Dispatch async background worker
@@ -160,6 +208,7 @@ async def upload_lecture_media(
             job_id=job.id,
             status=job.status,
             title=lecture.title,
+            analyze_job_id=analyze_job.id if analyze_job else None,
         )
     )
 
@@ -180,10 +229,11 @@ async def ingest_youtube_lecture(
             details={"url": payload.url},
         )
 
-    lecture, job = await ingestion_service.create_youtube_job(
+    lecture, job, analyze_job = await ingestion_service.create_youtube_job(
         db=db,
         url=payload.url,
         custom_title=payload.title,
+        auto_analyze=payload.auto_analyze,
     )
 
     # Dispatch async background worker
@@ -195,29 +245,70 @@ async def ingest_youtube_lecture(
             job_id=job.id,
             status=job.status,
             title=lecture.title,
+            analyze_job_id=analyze_job.id if analyze_job else None,
         )
     )
 
 
+@router.post("/{lecture_id}/analyze", response_model=ApiResponse[JobResponse])
+async def trigger_full_analysis(
+    lecture_id: str,
+    background_tasks: BackgroundTasks,
+    resume: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Triggers the unified one-click 8-stage pedagogy analysis pipeline:
+    transcribe -> segment topics -> confusion analysis -> misconceptions ->
+    prerequisites -> interventions -> student catch-up -> report.
+    If resume=True, skips already-completed stages and resumes from the first incomplete/failed stage.
+    """
+    job = await pipeline_service.create_pipeline_job(db=db, lecture_id=lecture_id, resume=resume)
+    background_tasks.add_task(pipeline_service.run_full_pipeline, job.id)
+    return ApiResponse(data=JobResponse.model_validate(job))
+
+
 @router.delete("/{lecture_id}", response_model=ApiResponse[dict])
 async def delete_lecture(lecture_id: str, db: AsyncSession = Depends(get_db)):
-    """Deletes a lecture record and its associated audio/media files from disk."""
+    """Deletes a lecture record, associated ChromaDB vectors, and media/derived audio files from disk."""
     stmt = select(Lecture).where(Lecture.id == lecture_id)
     res = await db.execute(stmt)
     lecture = res.scalar_one_or_none()
     if not lecture:
         raise ResourceNotFoundError("Lecture", lecture_id)
 
-    # Clean up physical files safely
+    # 1. Clean up associated vectors from ChromaDB
+    try:
+        from app.services.vector_store import VectorStoreService
+        vs = VectorStoreService()
+        deleted_vectors = vs.delete_by_lecture(lecture_id)
+        logger.info(f"Deleted {deleted_vectors} ChromaDB vector(s) for lecture '{lecture_id}'.")
+    except Exception as c_err:
+        logger.warning(f"Failed to remove ChromaDB vectors for lecture '{lecture_id}': {c_err}")
+
+    # 2. Clean up media and derived audio files from disk
+    files_to_remove = set()
     for path_str in [lecture.media_path, lecture.audio_path]:
         if path_str:
-            p = Path(path_str)
-            if p.exists() and p.is_file():
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
+            files_to_remove.add(Path(path_str))
 
+    # Also search audio and raw directories for derived audio files matching lecture_id or file stems
+    stems = {f.stem for f in files_to_remove if f}
+    stems.add(lecture_id)
+    for directory in [settings.audio_upload_dir, settings.raw_upload_dir]:
+        if directory.exists():
+            for p in directory.glob("*"):
+                if p.is_file() and any(stem in p.name for stem in stems if stem):
+                    files_to_remove.add(p)
+
+    for p in files_to_remove:
+        if p.exists() and p.is_file():
+            try:
+                p.unlink()
+            except OSError as oe:
+                logger.warning(f"Failed to delete derived media/audio file {p}: {oe}")
+
+    # 3. Delete lecture record from SQLite
     await db.delete(lecture)
     await db.commit()
 
@@ -401,7 +492,7 @@ async def trigger_misconception_extraction(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Triggers structured LLM diagnostic extraction of student misconceptions and root cause prerequisite gaps.
+    Triggers structured LLM extraction of potential misconceptions (inferred from lecture speech) and root cause prerequisite gaps.
     """
     job = await misconception_service.create_extraction_job(db=db, lecture_id=lecture_id)
     background_tasks.add_task(misconception_service.run_misconception_pipeline, job.id)
@@ -417,7 +508,7 @@ async def trigger_misconception_extraction(
 @router.get("/{lecture_id}/misconceptions", response_model=ApiResponse[List[MisconceptionSchema]])
 async def get_lecture_misconceptions(lecture_id: str, db: AsyncSession = Depends(get_db)):
     """
-    Retrieve all diagnosed student misconceptions and root cause gaps for a lecture.
+    Retrieve all potential misconceptions (inferred from lecture speech) and root cause gaps for a lecture.
     """
     stmt_lec = select(Lecture).where(Lecture.id == lecture_id)
     res_lec = await db.execute(stmt_lec)

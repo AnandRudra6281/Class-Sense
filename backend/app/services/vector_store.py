@@ -249,14 +249,27 @@ class VectorStoreService:
         distance = (1.0 - cosine_sim) / 2.0
         return float(np.clip(distance, 0.0, 1.0))
 
-    def delete_by_lecture(self, lecture_id: str) -> None:
-        """Delete all vectors tagged with a specific lecture_id."""
-        if self._collection is None:
-            return
+    def delete_by_lecture(self, lecture_id: str) -> int:
+        """Delete all vectors tagged with a specific lecture_id across all collections."""
+        total_deleted = 0
         try:
-            self._collection.delete(where={"lecture_id": lecture_id})
+            collections = self._client.list_collections()
+            for coll in collections:
+                try:
+                    count_before = coll.count()
+                    coll.delete(where={"lecture_id": lecture_id})
+                    count_after = coll.count()
+                    deleted = max(0, count_before - count_after)
+                    total_deleted += deleted
+                    if deleted > 0:
+                        logger.info(
+                            f"Deleted {deleted} vectors for lecture '{lecture_id}' from ChromaDB collection '{coll.name}'."
+                        )
+                except Exception as ce:
+                    logger.warning(f"Could not delete vectors from collection '{coll.name}': {ce}")
         except Exception as exc:
-            logger.warning(f"Could not delete vectors for lecture {lecture_id}: {exc}")
+            logger.warning(f"Could not list collections while deleting vectors for lecture {lecture_id}: {exc}")
+        return total_deleted
 
     def reset_collection(self) -> None:
         """Clear all records from the collection."""

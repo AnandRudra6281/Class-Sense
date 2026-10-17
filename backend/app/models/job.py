@@ -1,7 +1,7 @@
 import enum
 from typing import Any, Optional
 from sqlalchemy import Enum as SQLEnum, Integer, JSON, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 from app.db.base import Base, CoordinatesMixin, TimestampMixin, UUIDMixin
 
 
@@ -26,3 +26,9 @@ class Job(Base, UUIDMixin, TimestampMixin, CoordinatesMixin):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     result: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+
+    @validates("error_message")
+    def validate_error_message(self, key, value):
+        if value is not None and not str(value).strip():
+            return "RuntimeError: Job failed with an unspecified error."
+        return value

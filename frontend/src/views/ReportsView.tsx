@@ -347,14 +347,14 @@ export const ReportsView: React.FC = () => {
 
               <div className="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 space-y-1">
                 <div className="flex items-center justify-between text-[11px] text-slate-400 uppercase tracking-wider">
-                  <span>Misconceptions</span>
+                  <span>Potential Misconceptions</span>
                   <Brain className="w-3.5 h-3.5 text-indigo-400" />
                 </div>
                 <div className="text-2xl font-bold text-indigo-300">
                   {metrics.total_misconceptions ?? 0}
                 </div>
                 <p className="text-[10px] text-slate-500">
-                  Critical: {metrics.critical_misconceptions ?? 0}
+                  Critical: {metrics.critical_misconceptions ?? 0} &bull; Inferred from speech
                 </p>
               </div>
             </div>

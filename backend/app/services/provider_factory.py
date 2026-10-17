@@ -30,10 +30,12 @@ def get_asr_provider() -> ASRProvider:
         )
 
     if provider_name == "auto":
-        if settings.MISTRAL_API_KEY and settings.MISTRAL_API_KEY.strip() != "your_actual_mistral_api_key_here":
-            return MistralVoxtralASR()
-        elif settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip() != "your_gemini_api_key_here":
-            return GeminiAudioASR()
+        mistral_asr = MistralVoxtralASR()
+        gemini_asr = GeminiAudioASR()
+        if mistral_asr.is_enabled():
+            return mistral_asr
+        elif gemini_asr.is_enabled():
+            return gemini_asr
         return FasterWhisperASR()
 
     if provider_name == "faster_whisper":
@@ -59,11 +61,13 @@ def get_llm_provider() -> LLMProvider:
     provider_name = settings.LLM_PROVIDER.lower().strip()
 
     if provider_name == "auto":
-        if settings.MISTRAL_API_KEY and settings.MISTRAL_API_KEY.strip() != "your_actual_mistral_api_key_here":
-            return MistralLLMProvider()
-        elif settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip() != "your_gemini_api_key_here":
-            return GeminiLLMProvider()
-        return MistralLLMProvider()
+        mistral_llm = MistralLLMProvider()
+        gemini_llm = GeminiLLMProvider()
+        if mistral_llm.is_enabled():
+            return mistral_llm
+        elif gemini_llm.is_enabled():
+            return gemini_llm
+        return mistral_llm
 
     if provider_name == "mistral":
         return MistralLLMProvider()
@@ -86,11 +90,13 @@ def get_embedding_provider() -> EmbeddingProvider:
     provider_name = settings.EMBEDDING_PROVIDER.lower().strip()
 
     if provider_name == "auto":
-        if settings.MISTRAL_API_KEY and settings.MISTRAL_API_KEY.strip() != "your_actual_mistral_api_key_here":
-            return MistralEmbeddingProvider()
-        elif settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip() != "your_gemini_api_key_here":
-            return GeminiEmbeddingProvider()
-        return MistralEmbeddingProvider()
+        mistral_emb = MistralEmbeddingProvider()
+        gemini_emb = GeminiEmbeddingProvider()
+        if mistral_emb.is_enabled():
+            return mistral_emb
+        elif gemini_emb.is_enabled():
+            return gemini_emb
+        return mistral_emb
 
     if provider_name == "mistral":
         return MistralEmbeddingProvider()

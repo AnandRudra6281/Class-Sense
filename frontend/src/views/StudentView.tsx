@@ -349,11 +349,11 @@ export const StudentView: React.FC = () => {
       {activeTab === 'catchup' && (
         <div className="space-y-6">
           {catchups.length === 0 ? (
-            <Card variant="default" className="text-center py-12 space-y-3">
-              <BookOpen className="w-10 h-10 text-slate-500 mx-auto" />
-              <h3 className="text-base font-bold text-white">No Catch-Up Modules Generated Yet</h3>
+            <Card variant="default" className="text-center py-12 space-y-3" data-testid="catchup-empty-state">
+              <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+              <h3 className="text-base font-bold text-white">No Catch-Up Modules Needed</h3>
               <p className="text-xs text-slate-400 max-w-md mx-auto">
-                Trigger synthesis above to transform diagnosed lecture misconceptions into plain-English conceptual guides, real-world analogies, and core takeaway checklists.
+                No cognitive confusion or student hesitation was detected in this lecture. If you want to review or synthesize catch-up material anyway, trigger synthesis below.
               </p>
               <Button
                 variant="primary"

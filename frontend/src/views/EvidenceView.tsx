@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Sparkles,
+  CheckCircle2,
 } from 'lucide-react';
 import { Card, Badge, Alert, Button, Progress } from '../components/ui';
 import { lectureService } from '../services/lectureService';
@@ -216,8 +217,18 @@ export const EvidenceView: React.FC<EvidenceViewProps> = ({ onNavigate }) => {
               Loading empirical evidence items...
             </div>
           ) : evidenceList.length === 0 ? (
-            <Card className="text-center py-8 text-sm text-slate-400 space-y-3">
-              <p>No confusion evidence generated yet for this lecture.</p>
+            <Card className="text-center py-8 text-sm text-slate-400 space-y-3" data-testid="evidence-empty-state">
+              <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-1" />
+              <p className="font-semibold text-slate-200">
+                {confusionEvents.length === 0
+                  ? 'No confusion signals detected: lecture delivered with high instructional clarity.'
+                  : 'No confusion evidence generated yet for this lecture.'}
+              </p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                {confusionEvents.length === 0
+                  ? 'Acoustic metrics (speech rate, pause density, disfluency) remained within standard baseline bands.'
+                  : 'Run the sliding-window signal engine to detect and validate struggle moments.'}
+              </p>
               <Button
                 variant="secondary"
                 size="sm"

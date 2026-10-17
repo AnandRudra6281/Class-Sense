@@ -47,6 +47,37 @@ async def test_mistral_llm_structured_success():
     assert "weights" in res.keywords
     assert mock_client.chat.complete_async.call_count == 1
 
+    # Verify json_schema response_format was passed
+    call_kwargs = mock_client.chat.complete_async.call_args[1]
+    rf = call_kwargs.get("response_format", {})
+    assert rf.get("type") == "json_schema"
+    assert "json_schema" in rf
+
+
+@pytest.mark.asyncio
+async def test_mistral_llm_recovers_from_invalid_json():
+    """Verify that malformed/corrupted non-JSON on attempt 1 triggers automatic retry and recovers on attempt 2."""
+    mock_client = MagicMock()
+    mock_corrupt = MagicMock()
+    mock_corrupt.message.content = "I will explain Neural Networks: { broken json, not valid ... "
+    resp_corrupt = MagicMock(choices=[mock_corrupt])
+
+    mock_valid = MagicMock()
+    mock_valid.message.content = '{"title": "Recovered Title", "score": 0.88, "keywords": ["gradient", "loss"]}'
+    resp_valid = MagicMock(choices=[mock_valid])
+
+    mock_client.chat.complete_async = AsyncMock(side_effect=[resp_corrupt, resp_valid])
+
+    llm = MistralLLMProvider(client=mock_client)
+    res = await llm.generate_structured(
+        prompt="Explain",
+        response_model=SampleOutputSchema,
+    )
+    assert mock_client.chat.complete_async.call_count == 2
+    assert res.title == "Recovered Title"
+    assert res.score == 0.88
+    assert "gradient" in res.keywords
+
 
 @pytest.mark.asyncio
 async def test_mistral_llm_retry_once_on_validation_failure():
@@ -129,6 +160,35 @@ async def test_gemini_llm_structured_success():
     assert res.score == 0.95
     assert "chain rule" in res.keywords
 
+    # Verify structured config options
+    assert mock_client.models.generate_content.call_count == 1
+    call_kwargs = mock_client.models.generate_content.call_args[1]
+    config = call_kwargs.get("config")
+    assert config is not None
+    assert config.response_schema == SampleOutputSchema
+    assert config.response_mime_type == "application/json"
+    assert config.automatic_function_calling.disable is True
+
+
+@pytest.mark.asyncio
+async def test_gemini_llm_recovers_from_invalid_json():
+    """Verify that corrupted non-JSON on attempt 1 triggers automatic retry and recovers on attempt 2."""
+    from app.providers.llm.gemini_llm import GeminiLLMProvider
+    mock_client = MagicMock()
+    mock_corrupt = MagicMock(text="Here is the result: { invalid json ...")
+    mock_valid = MagicMock(text='{"title": "Recovered Title", "score": 0.91, "keywords": ["weights"]}')
+    mock_client.models.generate_content.side_effect = [mock_corrupt, mock_valid]
+
+    llm = GeminiLLMProvider(client=mock_client)
+    res = await llm.generate_structured(
+        prompt="Explain",
+        response_model=SampleOutputSchema,
+    )
+    assert mock_client.models.generate_content.call_count == 2
+    assert res.title == "Recovered Title"
+    assert res.score == 0.91
+    assert "weights" in res.keywords
+
 
 @pytest.mark.asyncio
 async def test_gemini_llm_retry_once_on_validation_failure():
@@ -148,6 +208,23 @@ async def test_gemini_llm_retry_once_on_validation_failure():
     assert mock_client.models.generate_content.call_count == 2
     assert res.title == "Fixed Schema"
     assert res.score == 0.8
+
+
+@pytest.mark.asyncio
+async def test_gemini_llm_fails_job_after_retry_failure():
+    from app.providers.llm.gemini_llm import GeminiLLMProvider
+    mock_client = MagicMock()
+    mock_fail = MagicMock(text='{"bad_key": 123}')
+    mock_client.models.generate_content.side_effect = [mock_fail, mock_fail]
+
+    llm = GeminiLLMProvider(client=mock_client)
+    with pytest.raises(LLMValidationError) as exc_info:
+        await llm.generate_structured(
+            prompt="Explain",
+            response_model=SampleOutputSchema,
+        )
+    assert mock_client.models.generate_content.call_count == 2
+    assert "Validation failed after retry" in str(exc_info.value.message)
 
 
 @pytest.mark.asyncio

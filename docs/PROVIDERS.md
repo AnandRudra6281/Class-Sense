@@ -31,9 +31,10 @@ GEMINI_API_KEY="your-gemini-key"
 
 | Capability | Adapter Class | Default Model ID | Notes |
 |---|---|---|---|
-| **LLM** | `GeminiLLMProvider` | `gemini-2.5-flash` | Strict JSON schema structured mode with retry-once recovery. |
-| **Embeddings** | `GeminiEmbeddingProvider` | `text-embedding-004` | Produces 768-dim embeddings normalized for cosine similarity in ChromaDB. |
-| **ASR** | `GeminiAudioASR` | `gemini-2.5-flash` | Multimodal audio transcription returning segment and word timestamps. |
+| **LLM** | `GeminiLLMProvider` | `gemini-3.5-flash-lite` | Strict JSON schema structured mode with retry-once recovery. |
+| **Embeddings** | `GeminiEmbeddingProvider` | `gemini-embedding-001` | Produces dense embeddings stored in dynamic collections by provider+model+dimension in ChromaDB. |
+| **ASR** | `GeminiAudioASR` | `gemini-3.5-flash-lite` | Multimodal audio transcription returning segment and word timestamps. |
+
 
 ---
 

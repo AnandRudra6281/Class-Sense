@@ -1,11 +1,11 @@
 import logging
 import uuid
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import AppException, ResourceNotFoundError
+from app.core.errors import AppException, ResourceNotFoundError, format_exception_error
 from app.db.session import async_session_factory
 from app.models.catchup import StudentCatchUp
 from app.models.confusion import ConfusionEvent
@@ -14,6 +14,7 @@ from app.models.lecture import Lecture
 from app.models.misconception import Misconception
 from app.models.prerequisite import PrerequisiteNode
 from app.models.quiz import QuizQuestion
+from app.models.transcript import TranscriptSegment
 from app.schemas.student import (
     LLMStudentCatchUpModule,
     LLMStudentCatchUpPackage,
@@ -21,6 +22,7 @@ from app.schemas.student import (
     QuizQuestionResponse,
     StudentCatchUpResponse,
 )
+from app.services.confusion_check import has_confusion_analysis_run
 from app.services.job_service import JobService
 from app.services.provider_factory import get_llm_provider
 
@@ -32,15 +34,15 @@ Your mission is to craft targeted, self-contained, student-facing catch-up modul
 Given:
 - Lecture title and overall duration
 - Student confusion quotes and acoustic struggle moments
-- Diagnosed student misconceptions (flawed intuitions, root causes, cognitive load scores)
+- Potential misconceptions (inferred from lecture speech) (flawed intuitions, root causes, cognitive load scores)
 - Traced prerequisite knowledge gaps (concept names, depth levels, remediation hints)
 
 Synthesize 1 to 3 `LLMStudentCatchUpModule` entries. Each module must contain:
 1. `title`: Clear, inspiring title (e.g. "Demystifying Backpropagation: The Assembly Line Analogy").
-2. `summary`: Empathetic, conversational, crystal-clear conceptual walkthrough that directly dismantles the diagnosed misconception and bridges the gap from first principles.
+2. `summary`: Empathetic, conversational, crystal-clear conceptual walkthrough that directly dismantles the potential misconception (inferred from lecture speech) and bridges the gap from first principles.
 3. `concrete_analogy`: A memorable physical or everyday real-world analogy anchoring the concept.
 4. `key_takeaways`: 3 to 5 actionable bullet points highlighting the mental model students must retain.
-5. `quiz_questions`: 1 to 2 diagnostic check questions designed to test whether the student still holds the misconception.
+5. `quiz_questions`: 1 to 2 diagnostic check questions designed to test whether the student still holds the potential misconception.
    Each question must have:
    - `question`: Precise diagnostic question prompt.
    - `options`: 4 plausible choices.
@@ -56,19 +58,16 @@ class StudentCatchUpService:
     """Service orchestrating LLM-based student catch-up material synthesis and diagnostic quiz generation."""
 
     async def create_catchup_job(self, db: AsyncSession, lecture_id: str) -> Job:
-        """Validates lecture and prerequisites, then creates a queued background Job."""
+        """Validates lecture and creates a queued background Job."""
         stmt = select(Lecture).where(Lecture.id == lecture_id)
         res = await db.execute(stmt)
         lecture = res.scalar_one_or_none()
         if not lecture:
             raise ResourceNotFoundError("Lecture", lecture_id)
 
-        # Ensure confusion events exist
-        stmt_conf = select(ConfusionEvent).where(ConfusionEvent.lecture_id == lecture_id).limit(1)
-        res_conf = await db.execute(stmt_conf)
-        if not res_conf.scalar_one_or_none():
+        if not await has_confusion_analysis_run(db, lecture.id):
             raise AppException(
-                f"Lecture '{lecture.title}' has no detected confusion events. Analyze cognitive signals before generating student catch-up materials.",
+                f"Lecture '{lecture.title}' has no confusion events. Analyze cognitive signals before generating student catch-up materials.",
                 code="CONFUSION_EVENTS_MISSING",
                 status_code=400,
             )
@@ -115,16 +114,16 @@ class StudentCatchUpService:
                     job_id=job.id,
                 )
                 logger.info(
-                    f"Student catch-up pipeline completed: {len(catchups)} modules created for job {job.id}."
+                    f"Student catch-up pipeline completed: {len(catchups)} modules created for job {job_id}."
                 )
             except Exception as e:
-                logger.error(f"Student catch-up job {job.id} failed: {e}", exc_info=True)
+                logger.error(f"Student catch-up job {job_id} failed: {e}", exc_info=True)
                 try:
                     res_j_err = await db.execute(select(Job).where(Job.id == job_id))
                     j_err = res_j_err.scalar_one_or_none()
                     if j_err:
                         j_err.status = "failed"
-                        j_err.error_message = str(e)
+                        j_err.error_message = format_exception_error(e)
                     await db.commit()
                 except Exception as ex:
                     logger.critical(f"Failed to persist error for job {job_id}: {ex}")
@@ -134,6 +133,7 @@ class StudentCatchUpService:
         lecture_id: str,
         db: AsyncSession,
         job_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     ) -> List[StudentCatchUp]:
         """Synthesize and persist student catch-up modules and diagnostic quiz questions with 3D coordinates."""
         logger.info(f"Starting student catch-up synthesis for lecture {lecture_id}...")
@@ -156,12 +156,30 @@ class StudentCatchUpService:
             res_c = await db.execute(stmt_c)
             confusion_events = list(res_c.scalars().all())
 
+            # Clean up prior catch-up modules and quiz questions for idempotency
+            stmt_old = select(StudentCatchUp).where(StudentCatchUp.lecture_id == lecture_id)
+            old_res = await db.execute(stmt_old)
+            old_catchups = list(old_res.scalars().all())
+            if old_catchups:
+                old_ids = [c.id for c in old_catchups]
+                await db.execute(delete(QuizQuestion).where(QuizQuestion.catchup_id.in_(old_ids)))
+            await db.execute(delete(StudentCatchUp).where(StudentCatchUp.lecture_id == lecture_id))
+            await db.commit()
+
             if not confusion_events:
-                raise AppException(
-                    f"No confusion events found for lecture '{lecture_id}'. Analyze cognitive signals before generating student catch-up.",
-                    code="CONFUSION_EVENTS_MISSING",
-                    status_code=400,
-                )
+                if not await has_confusion_analysis_run(db, lecture_id):
+                    raise AppException(
+                        f"Lecture '{lecture.title}' has no confusion events. Analyze cognitive signals before generating student catch-up materials.",
+                        code="CONFUSION_EVENTS_MISSING",
+                        status_code=400,
+                    )
+                logger.info(f"No confusion events found for lecture '{lecture_id}'. Zero student catch-up modules generated.")
+                await db.commit()
+                if progress_callback:
+                    await progress_callback(100)
+                if job_id:
+                    await JobService.update_job_status(job_id, "done", 100, db)
+                return []
 
             confusion_ids = [e.id for e in confusion_events]
             stmt_p = (
@@ -172,7 +190,9 @@ class StudentCatchUpService:
             res_p = await db.execute(stmt_p)
             prereq_nodes = list(res_p.scalars().all())
 
-            if job_id:
+            if progress_callback:
+                await progress_callback(35)
+            elif job_id:
                 await JobService.update_job_progress(job_id, 35, db)
 
             # 3. Formulate Prompt Context
@@ -193,7 +213,7 @@ class StudentCatchUpService:
                 events_summary.append(
                     f"Section at {ev.timestamp_start:.1f}s - {ev.timestamp_end:.1f}s (Confusion Score: {ev.confusion_score:.2f})\n"
                     f"Student Evidence: \"{ev.evidence_text}\"\n"
-                    f"Diagnosed Misconceptions:\n" + ("\n".join(misc_strs) if misc_strs else "  * None diagnosed yet")
+                    f"Potential Misconceptions (inferred from lecture speech):\n" + ("\n".join(misc_strs) if misc_strs else "  * None diagnosed yet")
                 )
 
             prereq_strs = []
@@ -229,7 +249,9 @@ class StudentCatchUpService:
                     status_code=502,
                 )
 
-            if job_id:
+            if progress_callback:
+                await progress_callback(75)
+            elif job_id:
                 await JobService.update_job_progress(job_id, 75, db)
 
             # 5. Clear previous catch-up packages for this lecture (idempotency, cascades to quiz_questions)

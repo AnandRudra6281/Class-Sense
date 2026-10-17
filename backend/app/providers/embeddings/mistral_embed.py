@@ -4,6 +4,7 @@ from mistralai.client import Mistral
 from app.core.config import settings
 from app.core.errors import AppException, ProviderDisabledError
 from app.providers.base import EmbeddingProvider
+from app.providers.resilience import execute_with_resilience
 
 logger = logging.getLogger("classsense.embeddings.mistral")
 
@@ -23,7 +24,8 @@ class MistralEmbeddingProvider(EmbeddingProvider):
         return settings.MISTRAL_EMBED_MODEL
 
     def is_enabled(self) -> bool:
-        return bool(settings.MISTRAL_API_KEY)
+        key = (settings.MISTRAL_API_KEY or "").strip()
+        return bool(key and not key.startswith("your_") and key != "your_mistral_api_key_here")
 
     def _get_client(self) -> Mistral:
         if self._client:
@@ -41,13 +43,17 @@ class MistralEmbeddingProvider(EmbeddingProvider):
 
         try:
             logger.info(f"Generating embeddings for {len(texts)} text(s) via {model_name}...")
-            response = await client.embeddings.create_async(
-                model=model_name,
-                inputs=texts,
-            )
+
+            async def _call_embed():
+                return await client.embeddings.create_async(
+                    model=model_name,
+                    inputs=texts,
+                )
+
+            response = await execute_with_resilience(_call_embed, call_name=f"mistral_embed({model_name})")
             # Response data items contain .embedding
             return [list(item.embedding) for item in response.data]
-        except ProviderDisabledError:
+        except (ProviderDisabledError, AppException):
             raise
         except Exception as exc:
             logger.error(f"Mistral embedding generation failed: {exc}", exc_info=True)

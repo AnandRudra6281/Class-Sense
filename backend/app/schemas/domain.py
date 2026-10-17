@@ -104,13 +104,13 @@ class EvidenceSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# 7. Misconception Schema
+# 7. Misconception Schema (Potential misconceptions inferred from lecture speech)
 class MisconceptionSchema(BaseModel):
     id: str
     confusion_id: str
-    name: str
-    explanation: str
-    apparent_reason: str
+    name: str = Field(description="Conceptual title of the potential misconception (inferred from lecture speech)")
+    explanation: str = Field(description="Explanation of the inferred misconception")
+    apparent_reason: str = Field(description="Apparent root cause intuition or missing prerequisite")
     severity: str = Field(default="high", description="'low', 'medium', 'high', 'critical'")
     cognitive_load_score: float = Field(ge=0.0, le=1.0, default=0.5)
     coordinates: Coordinates3D

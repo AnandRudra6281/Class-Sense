@@ -189,7 +189,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         <Card className="space-y-2">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>Diagnosed Misconceptions</span>
+            <span>Potential Misconceptions (inferred from lecture speech)</span>
             <Clock className="w-4 h-4 text-amber-400" />
           </div>
           <div className="text-2xl font-bold text-amber-400">{misconceptions.length}</div>

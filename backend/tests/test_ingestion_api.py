@@ -23,8 +23,8 @@ async def sample_test_wav(tmp_path: Path) -> Path:
         "1",
         str(fpath),
     ]
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    await proc.communicate()
+    import subprocess
+    proc = await asyncio.to_thread(subprocess.run, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert fpath.exists()
     return fpath
 
@@ -138,3 +138,135 @@ async def test_delete_lecture_flow(client: AsyncClient, sample_test_wav: Path):
     # Confirm 404 on fetch
     get_res = await client.get(f"/api/v1/lectures/{lecture_id}")
     assert get_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_lecture_removes_chromadb_vectors_and_derived_audio(
+    client: AsyncClient,
+    sample_test_wav: Path,
+    tmp_path: Path,
+):
+    """Verify that deleting a lecture removes its vectors from ChromaDB and derived audio files from disk."""
+    from app.core.config import settings
+    from app.models.lecture import Lecture
+    from app.services.vector_store import VectorStoreService
+    from app.db.session import async_session_factory
+    import uuid
+
+    lecture_id = str(uuid.uuid4())
+
+    # 1. Create simulated media and derived audio files
+    media_file = settings.raw_upload_dir / f"orig_{lecture_id}.mp4"
+    media_file.write_bytes(b"dummy original media")
+
+    derived_audio = settings.audio_upload_dir / f"derived_{lecture_id}_16k.wav"
+    derived_audio.write_bytes(b"dummy extracted 16k audio")
+
+    # 2. Persist Lecture record
+    async with async_session_factory() as db:
+        lecture = Lecture(
+            id=lecture_id,
+            title="Lecture To Wipe",
+            media_path=str(media_file),
+            audio_path=str(derived_audio),
+            status="ready",
+        )
+        db.add(lecture)
+        await db.commit()
+
+    # 3. Insert concept vectors into ChromaDB tagged with this lecture_id
+    vs = VectorStoreService(persist_dir=tmp_path / "chroma_test")
+    vs.ensure_collection(dimension=3, collection_name="test_delete_cleanup_coll_3")
+    vs.add_concept(
+        concept_id=f"prereq-{lecture_id}-1",
+        document="Gradient Descent Fundamentals",
+        embedding=[0.5, 0.5, 0.0],
+        metadata={"lecture_id": lecture_id, "topic": "Optimization"},
+    )
+    vs.add_concept(
+        concept_id=f"prereq-{lecture_id}-2",
+        document="Loss Functions",
+        embedding=[0.0, 0.5, 0.5],
+        metadata={"lecture_id": lecture_id, "topic": "Optimization"},
+    )
+
+    # Confirm vectors exist before delete
+    before_records = vs._collection.get(where={"lecture_id": lecture_id})
+    assert len(before_records["ids"]) == 2
+
+    # Patch settings.CHROMA_PERSIST_DIR so endpoint uses the same test collection
+    orig_chroma_dir = settings.CHROMA_PERSIST_DIR
+    settings.CHROMA_PERSIST_DIR = tmp_path / "chroma_test"
+
+    try:
+        # 4. Trigger DELETE /api/v1/lectures/{lecture_id}
+        del_res = await client.delete(f"/api/v1/lectures/{lecture_id}")
+        assert del_res.status_code == 200
+        assert del_res.json()["data"]["deleted"] is True
+
+        # 5. Assert physical derived audio and media files are deleted
+        assert not derived_audio.exists(), "Derived audio file was not removed from disk"
+        assert not media_file.exists(), "Original media file was not removed from disk"
+
+        # 6. Assert ChromaDB vectors are removed
+        after_records = vs._collection.get(where={"lecture_id": lecture_id})
+        assert len(after_records["ids"]) == 0, "ChromaDB vectors were not wiped for lecture"
+
+        # 7. Assert 404 in API
+        get_res = await client.get(f"/api/v1/lectures/{lecture_id}")
+        assert get_res.status_code == 404
+    finally:
+        settings.CHROMA_PERSIST_DIR = orig_chroma_dir
+
+
+@pytest.mark.asyncio
+async def test_upload_streaming_exceeds_max_upload_mb(client: AsyncClient, sample_test_wav: Path):
+    """Verify that exceeding MAX_UPLOAD_MB deletes the partial file and returns 413."""
+    from app.core.config import settings
+
+    # Temporarily set MAX_UPLOAD_MB to 0 MB to breach limit immediately
+    orig_limit = settings.MAX_UPLOAD_MB
+    settings.MAX_UPLOAD_MB = 0
+    try:
+        # Check files before
+        before_files = set(settings.raw_upload_dir.glob("*"))
+
+        with open(sample_test_wav, "rb") as f:
+            res = await client.post(
+                "/api/v1/lectures/upload",
+                files={"file": ("too_large.wav", f, "audio/wav")},
+                data={"title": "Too Large Lecture"},
+            )
+
+        assert res.status_code == 413
+        data = res.json()
+        assert data["success"] is False
+        assert data["error"]["code"] == "PAYLOAD_TOO_LARGE"
+        assert "maximum allowed size" in data["error"]["message"].lower()
+
+        # Confirm no leftover partial file on disk
+        after_files = set(settings.raw_upload_dir.glob("*"))
+        assert after_files == before_files
+    finally:
+        settings.MAX_UPLOAD_MB = orig_limit
+
+
+@pytest.mark.asyncio
+async def test_upload_non_media_file_rejected_by_ffprobe(client: AsyncClient):
+    """Verify that non-media contents with a media extension are rejected by ffprobe and file is deleted."""
+    from app.core.config import settings
+
+    before_files = set(settings.raw_upload_dir.glob("*"))
+
+    fake_media_bytes = b"This is plain text disguised as an mp4 file. It has no audio or video streams." * 50
+    files = {"file": ("fake_video.mp4", fake_media_bytes, "video/mp4")}
+    res = await client.post("/api/v1/lectures/upload", files=files, data={"title": "Fake Media"})
+
+    assert res.status_code == 400
+    data = res.json()
+    assert data["success"] is False
+    assert data["error"]["code"] in ("INVALID_MEDIA_FILE", "NON_MEDIA_FILE")
+
+    # Confirm no orphan file remained on disk
+    after_files = set(settings.raw_upload_dir.glob("*"))
+    assert after_files == before_files

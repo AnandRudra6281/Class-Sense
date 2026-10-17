@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -8,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.config import settings
 from app.core.errors import AppException, ProviderDisabledError
 from app.providers.base import ASRProvider
+from app.providers.resilience import execute_with_resilience
 from app.schemas.transcript import (
     TranscriptionResult,
     TranscriptSegmentSchema,
@@ -63,6 +66,45 @@ class GeminiAudioASR(ASRProvider):
             raise ProviderDisabledError("Gemini Audio", "GEMINI_API_KEY")
         return genai.Client(api_key=settings.GEMINI_API_KEY)
 
+    async def _upload_file(self, client: genai.Client, audio_path: Path):
+        """Upload audio asynchronously with resilience without blocking the event loop."""
+        async def _call():
+            if hasattr(client, "aio") and hasattr(client.aio, "files"):
+                fn = getattr(client.aio.files, "upload", None)
+                if inspect.iscoroutinefunction(fn):
+                    return await fn(file=str(audio_path))
+                res = fn(file=str(audio_path)) if fn else None
+                if inspect.isawaitable(res):
+                    return await res
+            return await asyncio.to_thread(client.files.upload, file=str(audio_path))
+
+        return await execute_with_resilience(_call, call_name=f"gemini_audio.upload({audio_path.name})")
+
+    async def _generate_content(
+        self,
+        client: genai.Client,
+        model: str,
+        contents: Any,
+        config: types.GenerateContentConfig,
+    ):
+        """Call Gemini content generation asynchronously with resilience without blocking the event loop."""
+        async def _call():
+            if hasattr(client, "aio") and hasattr(client.aio, "models"):
+                fn = getattr(client.aio.models, "generate_content", None)
+                if inspect.iscoroutinefunction(fn):
+                    return await fn(model=model, contents=contents, config=config)
+                res = fn(model=model, contents=contents, config=config) if fn else None
+                if inspect.isawaitable(res):
+                    return await res
+            return await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=config,
+            )
+
+        return await execute_with_resilience(_call, call_name=f"gemini_audio.generate_content({model})")
+
     async def transcribe(
         self,
         audio_path: Path,
@@ -77,8 +119,8 @@ class GeminiAudioASR(ASRProvider):
         logger.info(f"Transcribing audio '{audio_path.name}' with Gemini Multimodal ({model_name})...")
 
         try:
-            # Upload audio file to Gemini Files API
-            audio_file = client.files.upload(file=str(audio_path))
+            # Upload audio file to Gemini Files API asynchronously
+            audio_file = await self._upload_file(client, audio_path)
 
             prompt = (
                 "Please accurately transcribe this lecture audio. "
@@ -92,7 +134,8 @@ class GeminiAudioASR(ASRProvider):
                 response_mime_type="application/json",
             )
 
-            response = client.models.generate_content(
+            response = await self._generate_content(
+                client=client,
                 model=model_name,
                 contents=[audio_file, prompt],
                 config=config,

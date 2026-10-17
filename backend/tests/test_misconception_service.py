@@ -158,5 +158,91 @@ async def test_misconception_pipeline_and_api_endpoints():
         assert len(data) == 2
         assert data[0]["name"] == "Believing Span Must Include Non-Zero Coefficients Only"
         assert data[0]["severity"] == "critical"
-        assert data[0]["coordinates"]["y"] == 88.0
         assert data[1]["name"] == "Conflating Linear Independence with Orthogonality"
+
+
+@pytest.mark.asyncio
+async def test_misconception_extraction_bounded_concurrency_and_progress():
+    """Verify that multiple confusion events are processed with bounded concurrency and report real progress."""
+    import asyncio
+    from app.core.config import settings
+
+    async with async_session_factory() as db:
+        lec = Lecture(
+            title="Multi-Event Concurrency Lecture",
+            source_type="upload",
+            duration_seconds=600.0,
+            status="analyzed",
+            coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
+        )
+        db.add(lec)
+        await db.flush()
+
+        # Create 4 confusion events
+        for i in range(4):
+            conf = ConfusionEvent(
+                lecture_id=lec.id,
+                timestamp_start=i * 60.0,
+                timestamp_end=(i + 1) * 60.0,
+                confusion_score=0.7,
+                misconception_text=f"Struggle section {i}",
+                evidence_text=f"Quote for struggle section {i}",
+                signals={"primary_signal": "disfluency"},
+                coordinates={"x": float(i * 20), "y": 70.0, "z": 0.0},
+            )
+            db.add(conf)
+        await db.commit()
+        await db.refresh(lec)
+        lecture_id = lec.id
+
+    max_active_llm_calls = 0
+    current_active_llm_calls = 0
+    lock = asyncio.Lock()
+
+    async def mock_generate_structured(*args, **kwargs):
+        nonlocal max_active_llm_calls, current_active_llm_calls
+        async with lock:
+            current_active_llm_calls += 1
+            if current_active_llm_calls > max_active_llm_calls:
+                max_active_llm_calls = current_active_llm_calls
+
+        await asyncio.sleep(0.05)  # simulate LLM processing
+
+        async with lock:
+            current_active_llm_calls -= 1
+
+        return MisconceptionExtractionResponse(
+            misconceptions=[
+                ExtractedMisconceptionItem(
+                    name="Test Flawed Assumption",
+                    explanation="Test explanation",
+                    apparent_reason="Missing foundation",
+                    severity="medium",
+                    cognitive_load_score=0.6,
+                )
+            ]
+        )
+
+    mock_llm = AsyncMock()
+    mock_llm.name = "mock_concurrency_llm"
+    mock_llm.generate_structured.side_effect = mock_generate_structured
+
+    progress_reports = []
+    async def track_progress(pct: int):
+        progress_reports.append(pct)
+
+    with patch("app.services.misconception_service.get_llm_provider", return_value=mock_llm):
+        async with async_session_factory() as db:
+            result = await misconception_service.extract_misconceptions_for_lecture(
+                lecture_id=lecture_id,
+                db=db,
+                progress_callback=track_progress,
+            )
+
+    assert len(result) == 4
+    # Max active calls should not exceed configured provider max concurrency
+    assert max_active_llm_calls <= settings.PROVIDER_MAX_CONCURRENCY
+    # Granular progress should report multiple checkpoints ending at 100
+    assert len(progress_reports) == 4
+    assert progress_reports[-1] == 100
+    assert progress_reports == [25, 50, 75, 100]

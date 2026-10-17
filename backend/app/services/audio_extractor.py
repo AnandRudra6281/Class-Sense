@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -46,12 +47,13 @@ class AudioExtractor:
         ]
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = proc.stdout, proc.stderr
             if proc.returncode != 0:
                 err_msg = stderr.decode("utf-8", errors="replace").strip()
                 logger.warning(f"ffprobe returned non-zero code {proc.returncode}: {err_msg}. Attempting fallback probe.")
@@ -83,13 +85,13 @@ class AudioExtractor:
     async def _probe_fallback_ffmpeg(self, media_path: Path) -> Dict[str, Any]:
         """Fallback duration probe by parsing ffmpeg stderr output."""
         cmd = [self.ffmpeg_bin, "-i", str(media_path)]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
-        stderr_str = stderr.decode("utf-8", errors="replace")
+        stderr_str = proc.stderr.decode("utf-8", errors="replace")
 
         # Duration pattern: Duration: 00:01:23.45
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", stderr_str)
@@ -100,6 +102,13 @@ class AudioExtractor:
             duration = 0.0
 
         has_audio = "Audio:" in stderr_str
+        has_video = "Video:" in stderr_str
+
+        if not match and not has_audio and not has_video:
+            raise MediaProcessingError(
+                f"File '{media_path.name}' is not a valid media file: no audio or video streams detected.",
+                details={"stderr": stderr_str[-300:] if stderr_str else ""},
+            )
 
         return {
             "duration_seconds": duration,
@@ -147,15 +156,15 @@ class AudioExtractor:
 
         logger.info(f"Extracting audio via ffmpeg: {' '.join(cmd)}")
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            err_text = stderr.decode("utf-8", errors="replace").strip()
+            err_text = proc.stderr.decode("utf-8", errors="replace").strip()
             logger.error(f"ffmpeg extraction failed with code {proc.returncode}: {err_text}")
             raise AudioExtractionError(
                 f"Failed to extract 16kHz mono audio from media: {err_text}",

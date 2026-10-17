@@ -109,7 +109,7 @@ class SocraticTutorService:
         misc_context = []
         for ev in confusion_events:
             for m in ev.misconceptions:
-                misc_context.append(f"- Diagnosed Misconception: {m.name} -> {m.apparent_reason}")
+                misc_context.append(f"- Potential Misconception (inferred from lecture speech): {m.name} -> {m.apparent_reason}")
 
         prereq_context = [f"- Prerequisite: {p.concept_name} (Hint: {p.remediation_hint})" for p in prereqs]
         transcript_context = [f"[{s.start_time:.1f}s - {s.end_time:.1f}s] {s.text}" for s in segments]
@@ -125,7 +125,7 @@ class SocraticTutorService:
         prompt = (
             f"Lecture Title: {lecture.title} (Duration: {lecture.duration_seconds:.1f}s)\n"
             f"{catchup_context}\n"
-            f"--- Common Diagnosed Student Misconceptions ---\n"
+            f"--- Common Potential Misconceptions (inferred from lecture speech) ---\n"
             + ("\n".join(misc_context) if misc_context else "None identified")
             + "\n\n--- Prerequisite Anchors ---\n"
             + ("\n".join(prereq_context) if prereq_context else "None")

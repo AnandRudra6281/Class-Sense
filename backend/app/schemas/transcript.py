@@ -12,7 +12,7 @@ class WordTimestamp(BaseModel):
 
 class TranscriptSegmentSchema(BaseModel):
     id: Optional[str] = None
-    lecture_id: str
+    lecture_id: Optional[str] = "pending"
     start_time: float = Field(ge=0.0)
     end_time: float = Field(ge=0.0)
     text: str

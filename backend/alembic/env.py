@@ -22,12 +22,13 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Override sqlalchemy.url with settings.DATABASE_URL
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+raw_url = config.get_main_option("sqlalchemy.url")
+target_url = settings.DATABASE_URL if (not raw_url or "driver://user:pass" in raw_url) else raw_url
+config.set_main_option("sqlalchemy.url", target_url)
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = target_url
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -47,7 +48,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL
+    configuration["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url") or settings.DATABASE_URL
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",

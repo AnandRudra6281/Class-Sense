@@ -61,6 +61,27 @@ class Settings(BaseSettings):
     # ASR Provider Configuration ("faster_whisper" default, "mistral_voxtral", "gemini_audio" optional, "auto")
     ASR_PROVIDER: str = "faster_whisper"
     FASTER_WHISPER_MODEL: str = "base"
+    AUDIO_CHUNK_DURATION_SECONDS: float = 300.0
+    AUDIO_CHUNK_OVERLAP_SECONDS: float = 5.0
+
+    # Confusion Engine Configuration (30-60s sliding windows, signal + LLM weights)
+    CONFUSION_WINDOW_SIZE_SECONDS: float = 45.0
+    CONFUSION_WINDOW_STEP_SECONDS: float = 15.0
+    CONFUSION_SIGNAL_WEIGHT: float = 0.40
+    CONFUSION_LLM_WEIGHT: float = 0.60
+    CONFUSION_MIN_SCORE: float = 0.35
+
+    # Report & Pedagogical Pacing Bands (words per minute)
+    WPM_BAND_SLOW_MAX: float = 110.0
+    WPM_BAND_FAST_MIN: float = 180.0
+
+    # Provider Resilience & Concurrency Configuration
+    PROVIDER_CALL_TIMEOUT_SECONDS: float = 60.0
+    PROVIDER_MAX_CONCURRENCY: int = 3
+    PROVIDER_MAX_RETRIES: int = 3
+
+    # Upload Limits
+    MAX_UPLOAD_MB: int = 500
 
     # Optional Providers (Disabled unless keys provided)
     OPENAI_API_KEY: Optional[str] = None
@@ -90,6 +111,25 @@ class Settings(BaseSettings):
             except Exception:
                 pass
         return v if isinstance(v, list) else ["*"]
+
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def resolve_sqlite_url(cls, v: str) -> str:
+        if v.startswith("sqlite") and ":///." in v:
+            prefix, rel_path = v.split(":///.", 1)
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            clean_rel = rel_path.lstrip("/\\")
+            abs_path = (base_dir / clean_rel).resolve().as_posix()
+            return f"{prefix}:///{abs_path}"
+        return v
+
+    @field_validator("UPLOAD_DIR", "CHROMA_PERSIST_DIR", mode="after")
+    @classmethod
+    def resolve_relative_paths(cls, v: Path) -> Path:
+        if not v.is_absolute():
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            return (base_dir / v).resolve()
+        return v
 
 
 settings = Settings()

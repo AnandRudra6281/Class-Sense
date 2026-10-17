@@ -16,7 +16,8 @@ import tempfile
 import shutil
 
 TEST_CHROMA_DIR = Path(tempfile.mkdtemp(prefix="test_chroma_"))
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_classsense.db"
+TEST_DB_PATH = backend_path / "test_classsense.db"
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB_PATH.as_posix()}"
 os.environ["CHROMA_PERSIST_DIR"] = str(TEST_CHROMA_DIR)
 os.environ["DEBUG"] = "true"
 os.environ["OPENAI_API_KEY"] = ""
@@ -30,14 +31,24 @@ from app.main import app
 settings.OPENAI_API_KEY = ""
 settings.SARVAM_API_KEY = ""
 settings.CHROMA_PERSIST_DIR = TEST_CHROMA_DIR
+settings.DATABASE_URL = f"sqlite+aiosqlite:///{TEST_DB_PATH.as_posix()}"
 
-TEST_DB_PATH = Path("./test_classsense.db")
+from sqlalchemy import event
 
 test_engine = create_async_engine(
-    f"sqlite+aiosqlite:///{TEST_DB_PATH}",
-    connect_args={"check_same_thread": False},
+    f"sqlite+aiosqlite:///{TEST_DB_PATH.as_posix()}",
+    connect_args={"check_same_thread": False, "timeout": 30.0},
     future=True,
 )
+
+@event.listens_for(test_engine.sync_engine, "connect")
+def set_test_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
 TestingSessionLocal = async_sessionmaker(
     bind=test_engine,
     class_=AsyncSession,
@@ -68,11 +79,14 @@ def cleanup_test_chroma():
 
 @pytest.fixture(autouse=True)
 async def setup_test_db():
+    from sqlalchemy import text
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
 
 
 async def override_get_db() -> AsyncGenerator[AsyncSession, None]:

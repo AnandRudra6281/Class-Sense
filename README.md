@@ -28,9 +28,8 @@ AI_PROJECT/
 │   │   │   ├── layout/          # Header, Sidebar, MobileDrawer, AppLayout
 │   │   │   └── ui/              # Button, Card, Badge, Progress, Alert, Modal
 │   │   ├── hooks/               # useNavigation (10 view IDs), useJobPolling
-│   │   ├── mocks/               # Isolated mock data for demo mode
 │   │   ├── services/            # Frontend services (jobService, lectureService)
-│   │   ├── test/                # Vitest smoke tests for 10 views and UI primitives
+│   │   ├── test/                # Vitest tests for 10 views, stage stepper, and UI primitives
 │   │   ├── types/               # TypeScript interfaces mirroring all 12 backend schemas
 │   │   ├── views/               # 10 platform views
 │   │   ├── App.tsx              # Root app component
@@ -48,19 +47,20 @@ AI_PROJECT/
 
 1. **Provider Interfaces (`backend/app/providers/base.py`)**:
    - `ASRProvider`: Word/segment timestamped transcription. Primary: Mistral Voxtral; local fallback: `faster-whisper`.
-   - `LLMProvider`: Structured JSON output validated by Pydantic. Supports `mistral-large-latest` and `gemini-2.5-flash`.
-   - `EmbeddingProvider`: Vector embeddings (`mistral-embed` / Gemini text-embedding-004) with persistent ChromaDB storage.
+   - `LLMProvider`: Structured JSON output validated by Pydantic. Supports `mistral-large-latest` (default) and `gemini-3.5-flash-lite` (optional adapter).
+   - `EmbeddingProvider`: Vector embeddings (`mistral-embed` / `gemini-embedding-001`) with persistent ChromaDB storage partitioned by provider, model, and dimension.
 2. **Deterministic 3D Coordinates $(x, y, z)$**:
    - Every domain entity carries pedagogical coordinates for Three.js spatial graph visualization:
      - $x$: Time position normalized to $[0.0, 100.0]$
      - $y$: Confusion score normalized to $[0.0, 100.0]$
      - $z$: Topic hierarchy depth $[0.0, 10.0]$
 3. **Structured JSON Mode & Retry-Once Recovery**:
-   - All LLM outputs enforce Pydantic validation. On schema error, the LLM retries once with the specific validation error; if it fails again, the job terminates cleanly with an explicit error envelope.
-4. **Persisted Background Jobs**:
-   - Long-running tasks (transcription, audio extraction, topic segmentation) execute asynchronously with persisted progress percentages and status (`queued`, `running`, `failed`, `done`).
-5. **10 Platform Views**:
-   - `landing`, `dashboard`, `library`, `upload`, `analysis`, `evidence`, `misconceptions`, `student`, `reports`, `settings`.
+   - All LLM outputs enforce Pydantic validation. On schema error, the LLM retries once with the specific validation error; if it fails again, the job terminates cleanly with an explicit error envelope. Never persist synthetic content or hardcoded fallbacks.
+4. **Persisted Background Jobs & One-Click Pipeline**:
+   - Long-running tasks execute asynchronously with persisted progress percentages and status (`queued`, `running`, `failed`, `done`). `POST /api/v1/lectures/{id}/analyze` orchestrates all 8 stages with granular progress and clean failure resumption.
+5. **10 Platform Views & Zero Fake Fallbacks**:
+   - `landing`, `dashboard`, `library`, `upload`, `analysis`, `evidence`, `misconceptions`, `student`, `reports`, `settings`. All views consume live REST APIs. The Demo Mode indicator in the header provides a visual presenter toggle without injecting mock content.
+
 
 ---
 
@@ -115,16 +115,18 @@ In PowerShell from the `backend/` directory:
 python -m pytest -v
 ```
 
-All 57 backend test suites will execute, covering:
-- Health and error envelope endpoints
-- Media ingestion (audio/video file upload, `yt-dlp` YouTube downloads, `ffmpeg` 16kHz mono WAV extraction)
-- Transcription pipeline (faster-whisper and cloud ASR with word timestamps)
-- Empirical confusion signal engine (`docs/CONFUSION_METHOD.md`) & hierarchical topic segmentation
-- Structured LLM misconception extraction with cognitive load scoring
-- ChromaDB persistent vector retrieval and prerequisite graph tracing
+All 96 backend tests across 18 test modules will execute, covering:
+- Health, resilience, and error envelope endpoints
+- Media ingestion (streaming upload limits, `yt-dlp` YouTube downloads, `ffmpeg` 16kHz mono WAV extraction, ffprobe validation)
+- Transcription pipeline (faster-whisper and cloud ASR with word timestamps and 5-minute chunk overlap de-duplication)
+- Empirical confusion signal engine (`docs/CONFUSION_METHOD.md`), 30-60s sliding windows, and hierarchical topic segmentation
+- Structured LLM extraction of potential misconceptions (inferred from lecture speech) with model confidence and cognitive load scoring & bounded concurrency
+- ChromaDB persistent vector retrieval isolated per provider+model+dimension and prerequisite graph tracing
 - Teacher interventions synthesis (recap checklists, analogies, diagnostic checks)
 - Student catch-up package synthesis & grounded Socratic AI tutor
 - Pedagogy quality audit reports, quantitative metrics, and multi-format exports
+- Schema migration via Alembic covering all 12 entities with SQLite WAL & busy_timeout
+- Unified one-click 8-stage pipeline (`/analyze`) with stage provenance and provider-mismatch resume invalidation
 
 ---
 
@@ -156,12 +158,13 @@ Frontend will be running at:
 In PowerShell from the `frontend/` directory:
 
 ```powershell
-# Run all Vitest smoke tests across 10 views, layout, and UI primitives
-npm test
+# Run all 49 Vitest tests across 15 test suites covering 10 views, stage stepper, analyze flow, and UI primitives
+npm test -- --run
 
 # Run strict TypeScript check and build production bundle
 npm run build
 ```
+
 
 ---
 

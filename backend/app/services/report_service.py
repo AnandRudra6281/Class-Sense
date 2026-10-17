@@ -1,12 +1,12 @@
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import AppException, ResourceNotFoundError
+from app.core.errors import AppException, ResourceNotFoundError, format_exception_error
 from app.db.session import async_session_factory
 from app.models.confusion import ConfusionEvent
 from app.models.intervention import Intervention
@@ -21,17 +21,38 @@ from app.schemas.report import LLMReportPayload, ReportExportResponse
 from app.services.job_service import JobService
 from app.services.provider_factory import get_llm_provider
 
+from app.core.config import settings
+
 logger = logging.getLogger("classsense.services.report")
+
+
+def classify_wpm_band(wpm: float) -> str:
+    """Deterministically maps WPM to configurable bands: slow (<110), normal (110-180), fast (>180)."""
+    slow_max = getattr(settings, "WPM_BAND_SLOW_MAX", 110.0)
+    fast_min = getattr(settings, "WPM_BAND_FAST_MIN", 180.0)
+    if wpm < slow_max:
+        return "slow"
+    elif wpm > fast_min:
+        return "fast"
+    else:
+        return "normal"
+
 
 REPORT_SYSTEM_PROMPT = """You are an executive pedagogical auditor and chief academic quality consultant for universities and online learning institutions.
 Your mission is to produce an authoritative, comprehensive, and data-driven Pedagogy Quality & Cognitive Audit Report for an analyzed lecture.
 
+CRITICAL PACING & FACTUAL INTEGRITY RULES:
+- You MUST adhere strictly to the empirical quantitative metrics and pacing band labels provided.
+- You are STRICTLY FORBIDDEN from describing delivery as 'fast', 'rushed', 'rapid', or 'accelerated' if the pacing band is 'normal' or 'slow'. Specifically, normal-band pacing (110 - 180 WPM, including 163 WPM) must NEVER be characterized as fast or accelerated.
+- You are STRICTLY FORBIDDEN from describing delivery as 'slow', 'sluggish', or 'dragging' if the pacing band is 'normal' or 'fast'.
+- Do NOT make any claims about speech rate, pauses, or cognitive strain that contradict the provided quantitative metrics and band classifications.
+
 Given:
 - Lecture metadata and overall duration
 - Topic breakdown and structural outline
-- Computed speech pacing metrics (WPM, pause density, hesitation spikes)
+- Computed speech pacing metrics (WPM, pacing band, pause density, hesitation spikes)
 - Detected student cognitive friction clusters and struggle moments
-- Diagnosed misconceptions and traced prerequisite gaps
+- Potential misconceptions (inferred from lecture speech) and traced prerequisite gaps
 
 Synthesize a structured `LLMReportPayload` containing:
 1. `title`: Professional report title (e.g. "Pedagogical Quality & Cognitive Audit: Machine Learning Dynamics").
@@ -44,6 +65,8 @@ Always output strictly valid JSON conforming to the schema.
 
 class ReportService:
     """Service orchestrating empirical quantitative metric computation and LLM executive audit report synthesis."""
+
+    classify_wpm_band = staticmethod(classify_wpm_band)
 
     async def create_report_job(self, db: AsyncSession, lecture_id: str) -> Job:
         """Validates lecture and creates a queued report generation Job."""
@@ -102,7 +125,7 @@ class ReportService:
                     j_err = res_j_err.scalar_one_or_none()
                     if j_err:
                         j_err.status = "failed"
-                        j_err.error_message = str(e)
+                        j_err.error_message = format_exception_error(e)
                     await db.commit()
                 except Exception as ex:
                     logger.critical(f"Failed to persist error for job {job_id}: {ex}")
@@ -112,6 +135,7 @@ class ReportService:
         lecture_id: str,
         db: AsyncSession,
         job_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     ) -> Report:
         """Computes empirical metrics and generates an LLM pedagogical quality audit report."""
         logger.info(f"Starting report generation for lecture {lecture_id}...")
@@ -175,12 +199,33 @@ class ReportService:
                 else (round((total_words / max(1.0, total_duration)) * 60.0, 1) if total_duration > 0 else 135.0)
             )
 
+            wpm_band = classify_wpm_band(avg_wpm)
+
             hesitation_pause_count = sum(
                 1
                 for e in lecture.confusion_events
                 if (e.signals.get("pause_density", 0) > 0.20 or e.signals.get("wpm_anomaly_z", 0) > 1.5)
             )
 
+            # Check inter-segment pause gaps >= 1.5s
+            inter_segment_pause_seconds = 0.0
+            sorted_segs = sorted(lecture.segments, key=lambda s: s.start_time)
+            for i in range(len(sorted_segs) - 1):
+                gap = sorted_segs[i + 1].start_time - sorted_segs[i].end_time
+                if gap >= 1.5:
+                    hesitation_pause_count += 1
+                    inter_segment_pause_seconds += gap
+
+            pause_density = round(inter_segment_pause_seconds / max(1.0, total_duration), 3) if total_duration > 0 else 0.0
+            if pause_density < 0.10:
+                pause_band = "low pause frequency / continuous flow"
+            elif pause_density <= 0.25:
+                pause_band = "moderate / standard pausing"
+            else:
+                pause_band = "high pause density / frequent hesitation"
+
+            llm = get_llm_provider()
+            prov_name = llm.name if isinstance(getattr(llm, "name", None), str) else "llm"
             metrics: Dict[str, Any] = {
                 "total_duration_seconds": round(total_duration, 1),
                 "total_segments": total_segments,
@@ -192,11 +237,18 @@ class ReportService:
                 "critical_misconceptions": critical_misconceptions,
                 "traced_prerequisites": prereq_count,
                 "avg_wpm": avg_wpm,
+                "wpm_band": wpm_band,
                 "hesitation_pause_count": hesitation_pause_count,
+                "pause_density": pause_density,
+                "pause_band": pause_band,
                 "pedagogy_quality_score": round(max(0.0, (1.0 - (confusion_density * 0.7 + (avg_confusion_score * 0.3))) * 100), 1),
+                "provider": prov_name.lower(),
+                "stage_version": "1.0.0",
             }
 
-            if job_id:
+            if progress_callback:
+                await progress_callback(65)
+            elif job_id:
                 await JobService.update_job_progress(job_id, 65, db)
 
             # 3. Assemble Prompt & Call LLM in Structured JSON Mode
@@ -204,21 +256,36 @@ class ReportService:
             prereq_summary = [f"- {p.concept_name}: {p.gap_description}" for p in prereq_nodes]
             topic_summary = [f"- {t.title} ({t.start_time:.0f}s - {t.end_time:.0f}s)" for t in lecture.topics]
 
+            if confusion_spikes == 0:
+                confusion_section = (
+                    "--- Cognitive Hesitation & Confusion Events ---\n"
+                    "Zero cognitive hesitation or confusion events were detected across the lecture.\n"
+                    "The instructional delivery demonstrated high conceptual clarity and fluency.\n"
+                    "IMPORTANT: Do NOT invent or fabricate any student misconceptions or prerequisite gaps. "
+                    "The executive summary should commend the clear instructional delivery and address how the lecture pacing supported comprehension."
+                )
+            else:
+                confusion_section = (
+                    "--- Potential Student Misconceptions (inferred from lecture speech) ---\n"
+                    + ("\n".join(misc_summary) if misc_summary else "No potential misconceptions inferred")
+                    + "\n\n--- Traced Prerequisite Gaps ---\n"
+                    + ("\n".join(prereq_summary) if prereq_summary else "No prerequisites traced")
+                )
+
             prompt = (
                 f"Lecture Title: {lecture.title}\n"
-                f"Duration: {total_duration:.1f}s | Pacing: {avg_wpm} WPM | Segments: {total_segments}\n\n"
+                f"Duration: {total_duration:.1f}s | Pacing: {avg_wpm:.1f} WPM [Band: {wpm_band.upper()}] | Segments: {total_segments}\n\n"
                 f"--- Quantitative Cognitive Metrics ---\n"
+                f"- Speech Rate: {avg_wpm:.1f} WPM -> {wpm_band.upper()} band (thresholds: slow < {settings.WPM_BAND_SLOW_MAX}, normal {settings.WPM_BAND_SLOW_MAX}-{settings.WPM_BAND_FAST_MIN}, fast > {settings.WPM_BAND_FAST_MIN} WPM).\n"
+                f"  CRITICAL INSTRUCTION: This lecture delivery is classified as {wpm_band.upper()}. You are forbidden from describing normal pacing (e.g. 110-180 WPM, including 163 WPM) as fast, rapid, rushed, or accelerated.\n"
+                f"- Pause Metrics: {hesitation_pause_count} hesitation pauses ({pause_density:.1%} density) -> {pause_band}\n"
                 f"- Confusion Density: {confusion_density * 100:.1f}%\n"
                 f"- Confusion Spikes: {confusion_spikes} (Avg Score: {avg_confusion_score:.2f})\n"
-                f"- Hesitation Pauses: {hesitation_pause_count}\n"
                 f"- Quality Score: {metrics['pedagogy_quality_score']}/100\n\n"
                 f"--- Topic Outline ---\n"
                 + ("\n".join(topic_summary) if topic_summary else "No topics segmented")
-                + "\n\n--- Diagnosed Student Misconceptions ---\n"
-                + ("\n".join(misc_summary) if misc_summary else "No misconceptions diagnosed")
-                + "\n\n--- Traced Prerequisite Gaps ---\n"
-                + ("\n".join(prereq_summary) if prereq_summary else "No prerequisites traced")
-                + "\n\nGenerate the structured executive audit report."
+                + f"\n\n{confusion_section}\n\n"
+                "Generate the structured executive audit report adhering strictly to the above quantitative metrics and pacing band constraints."
             )
 
             llm = get_llm_provider()
@@ -235,7 +302,9 @@ class ReportService:
                     status_code=502,
                 )
 
-            if job_id:
+            if progress_callback:
+                await progress_callback(85)
+            elif job_id:
                 await JobService.update_job_progress(job_id, 85, db)
 
             # 4. Remove previous reports for idempotency
@@ -308,7 +377,7 @@ class ReportService:
 | **Confusion Density** | {round(report.confusion_density * 100, 1)}% | < 15.0% Optimal |
 | **Cognitive Friction Spikes** | {metrics.get('confusion_spikes', 0)} | Lower is better |
 | **Average Confusion Score** | {metrics.get('avg_confusion_score', 0.0)} / 1.00 | < 0.40 Nominal |
-| **Diagnosed Misconceptions** | {metrics.get('total_misconceptions', 0)} ({metrics.get('critical_misconceptions', 0)} Critical) | Target zero critical |
+| **Potential Misconceptions (inferred from lecture speech)** | {metrics.get('total_misconceptions', 0)} ({metrics.get('critical_misconceptions', 0)} Critical) | Target zero critical |
 | **Traced Prerequisite Gaps** | {metrics.get('traced_prerequisites', 0)} | Foundational anchors |
 | **Average Pacing (WPM)** | {metrics.get('avg_wpm', 130)} WPM | 120 - 150 WPM Recommended |
 | **Hesitation Pause Spikes** | {metrics.get('hesitation_pause_count', 0)} | Significant acoustic stalls |

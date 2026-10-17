@@ -1,18 +1,22 @@
+import asyncio
 import logging
 import uuid
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import AppException, ResourceNotFoundError
+from app.core.config import settings
+from app.core.errors import AppException, ResourceNotFoundError, format_exception_error
 from app.db.session import async_session_factory
 from app.models.confusion import ConfusionEvent
 from app.models.job import Job
 from app.models.lecture import Lecture
 from app.models.misconception import Misconception
 from app.models.prerequisite import PrerequisiteNode
+from app.models.transcript import TranscriptSegment
 from app.schemas.prerequisite import PrerequisiteTraceItem, PrerequisiteTraceResult
+from app.services.confusion_check import has_confusion_analysis_run
 from app.services.job_service import JobService
 from app.services.provider_factory import get_embedding_provider, get_llm_provider
 from app.services.vector_store import VectorStoreService
@@ -20,9 +24,9 @@ from app.services.vector_store import VectorStoreService
 logger = logging.getLogger("classsense.services.prerequisite")
 
 PREREQUISITE_TRACING_SYSTEM_PROMPT = """You are an expert cognitive learning scientist and curriculum knowledge graph architect.
-Your task is to analyze student confusion and diagnosed mental model misconceptions from a lecture, and trace backwards to identify the missing upstream prerequisite concepts that cause this struggle.
+Your task is to analyze student confusion and potential misconceptions (inferred from lecture speech) from a lecture, and trace backwards to identify the missing upstream prerequisite concepts that cause this struggle.
 
-For each diagnosed misconception:
+For each potential misconception (inferred from lecture speech):
 1. Identify 2 to 4 distinct prerequisite concepts that are necessary foundations for understanding the topic.
 2. Assign each prerequisite an integer `depth`:
    - depth=1: Direct / immediate prerequisite (e.g., if struggling with 'Gradient of Multivariable Function', depth=1 is 'Partial Derivatives').
@@ -45,10 +49,11 @@ class PrerequisiteService:
         lecture_id: str,
         db: AsyncSession,
         job_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     ) -> List[PrerequisiteNode]:
         """Trace missing prerequisite concepts for all confusion events in a lecture, calculate vector distances,
-
         and persist PrerequisiteNode records with deterministic 3D coordinates.
+        Runs per-event LLM and embedding calls with bounded concurrency.
         """
         logger.info(f"Starting prerequisite tracing for lecture {lecture_id}...")
 
@@ -74,15 +79,27 @@ class PrerequisiteService:
             ev_res = await db.execute(ev_stmt)
             confusion_events = list(ev_res.scalars().all())
 
-            if not confusion_events:
-                raise AppException(
-                    f"No confusion events found for lecture '{lecture_id}'. Please run confusion signal analysis first.",
-                    code="NO_CONFUSION_EVENTS",
-                    status_code=400,
-                )
+            ev_ids_stmt = select(ConfusionEvent.id).where(ConfusionEvent.lecture_id == lecture_id)
+            ev_ids_res = await db.execute(ev_ids_stmt)
+            ev_ids = list(ev_ids_res.scalars().all())
+            if ev_ids:
+                await db.execute(delete(PrerequisiteNode).where(PrerequisiteNode.confusion_id.in_(ev_ids)))
+                await db.commit()
 
-            if job_id:
-                await JobService.update_job_progress(job_id, 20, db)
+            if not confusion_events:
+                if not await has_confusion_analysis_run(db, lecture_id):
+                    raise AppException(
+                        f"Lecture '{lecture.title}' has no confusion events. Analyze cognitive signals before tracing prerequisites.",
+                        code="CONFUSION_EVENTS_MISSING",
+                        status_code=400,
+                    )
+                logger.info(f"No confusion events found for lecture '{lecture_id}'. Zero prerequisite nodes traced.")
+                await db.commit()
+                if progress_callback:
+                    await progress_callback(100)
+                if job_id:
+                    await JobService.update_job_status(job_id, "done", 100, db)
+                return []
 
             # 3. Instantiate providers and vector store
             llm = get_llm_provider()
@@ -93,145 +110,151 @@ class PrerequisiteService:
             all_created_nodes: List[PrerequisiteNode] = []
             confusion_ids = [e.id for e in confusion_events]
 
+            concurrency = getattr(settings, "PROVIDER_MAX_CONCURRENCY", 3)
+            sem = asyncio.Semaphore(concurrency)
+            chroma_lock = asyncio.Lock()
+            completed_count = 0
+
+            # 4. Process each confusion event with bounded concurrency
+            async def process_prereq_event(event: ConfusionEvent, idx: int) -> List[PrerequisiteNode]:
+                nonlocal completed_count
+                async with sem:
+                    misc_details = []
+                    for m in event.misconceptions:
+                        misc_details.append(
+                            f"- Misconception: {m.name}\n"
+                            f"  Explanation: {m.explanation}\n"
+                            f"  Root Cause Hypothesis: {m.apparent_reason}\n"
+                            f"  Severity: {m.severity}"
+                        )
+                    misc_text = "\n".join(misc_details) if misc_details else f"Apparent Confusion: {event.misconception_text}"
+
+                    prompt = (
+                        f"Lecture Title: {lecture.title}\n"
+                        f"Confusion Segment Timestamp: {event.timestamp_start:.1f}s - {event.timestamp_end:.1f}s\n"
+                        f"Hesitation Evidence Quote: \"{event.evidence_text}\"\n\n"
+                        f"Potential Student Misconceptions (inferred from lecture speech):\n{misc_text}\n\n"
+                        f"Based on the above diagnostic signals, determine 2 to 4 prerequisite concepts "
+                        f"across varying depths (depth=1, depth=2, depth=3) that must be remediated."
+                    )
+
+                    logger.info(f"Synthesizing prerequisite gaps for confusion event {event.id} ({idx + 1}/{total_events})...")
+                    trace_result: PrerequisiteTraceResult = await llm.generate_structured(
+                        prompt=prompt,
+                        response_model=PrerequisiteTraceResult,
+                        system_prompt=PREREQUISITE_TRACING_SYSTEM_PROMPT,
+                    )
+
+                    if not trace_result.gaps:
+                        raise AppException(
+                            f"LLM returned no prerequisite knowledge gaps for confusion event {event.id}.",
+                            code="PREREQUISITE_TRACING_FAILED",
+                            status_code=502,
+                        )
+
+                    context_str = f"{lecture.title}: {event.misconception_text}. Evidence: {event.evidence_text}"
+                    concept_strs = [f"{g.concept_name}: {g.gap_description}" for g in trace_result.gaps]
+
+                    all_texts = [context_str] + concept_strs
+                    embeddings = await embedding_provider.embed_texts(all_texts)
+                    if not embeddings or len(embeddings) != len(all_texts):
+                        raise AppException(
+                            f"Embedding provider returned invalid embedding count for event {event.id}.",
+                            code="EMBEDDING_FAILED",
+                            status_code=502,
+                        )
+
+                    context_embedding = embeddings[0]
+                    concept_embeddings = embeddings[1:]
+                    embed_dim = len(context_embedding)
+
+                    async with chroma_lock:
+                        vector_store.ensure_collection(
+                            dimension=embed_dim,
+                            provider=embedding_provider.name,
+                            model=embedding_provider.model,
+                        )
+
+                        event_created_data = []
+                        for g_idx, gap_item in enumerate(trace_result.gaps):
+                            concept_emb = (
+                                concept_embeddings[g_idx]
+                                if g_idx < len(concept_embeddings)
+                                else context_embedding
+                            )
+                            node_id = str(uuid.uuid4())
+                            concept_store_id = f"prereq-{node_id}"
+
+                            vector_store.add_concept(
+                                concept_id=concept_store_id,
+                                document=f"{gap_item.concept_name} - {gap_item.gap_description}",
+                                embedding=concept_emb,
+                                metadata={
+                                    "lecture_id": lecture_id,
+                                    "confusion_id": event.id,
+                                    "concept_name": gap_item.concept_name,
+                                    "depth": gap_item.depth,
+                                },
+                            )
+                            event_created_data.append((node_id, concept_store_id, gap_item, concept_emb))
+
+                        chroma_matches = vector_store.query_similar(
+                            query_embedding=context_embedding,
+                            n_results=len(event_created_data),
+                            where={"confusion_id": event.id},
+                        )
+                        chroma_dist_map = {m["id"]: m["distance"] for m in chroma_matches}
+
+                    event_nodes = []
+                    for node_id, concept_store_id, gap_item, concept_emb in event_created_data:
+                        vector_dist = chroma_dist_map.get(
+                            concept_store_id,
+                            VectorStoreService.compute_cosine_distance(context_embedding, concept_emb),
+                        )
+                        event_x = 0.0
+                        if isinstance(event.coordinates, dict):
+                            event_x = float(event.coordinates.get("x", 0.0))
+                        elif hasattr(event.coordinates, "x"):
+                            event_x = float(getattr(event.coordinates, "x", 0.0))
+
+                        coord_x = round(event_x, 2)
+                        coord_y = round(float(vector_dist) * 100.0, 2)
+                        coord_z = float(gap_item.depth)
+
+                        node = PrerequisiteNode(
+                            id=node_id,
+                            confusion_id=event.id,
+                            concept_name=gap_item.concept_name,
+                            gap_description=gap_item.gap_description,
+                            remediation_hint=gap_item.remediation_hint,
+                            depth=gap_item.depth,
+                            vector_distance=round(float(vector_dist), 4),
+                            coordinates={"x": coord_x, "y": coord_y, "z": coord_z},
+                        )
+                        event_nodes.append(node)
+
+                    completed_count += 1
+                    pct = int((completed_count / total_events) * 100)
+                    if progress_callback:
+                        await progress_callback(pct)
+                    elif job_id:
+                        try:
+                            await JobService.update_job_progress(job_id, pct, db)
+                        except Exception:
+                            pass
+
+                    return event_nodes
+
+            results = await asyncio.gather(*(process_prereq_event(ev, i) for i, ev in enumerate(confusion_events)))
+
             # Clear existing prerequisite nodes for these confusion events (idempotent re-run)
             del_stmt = delete(PrerequisiteNode).where(PrerequisiteNode.confusion_id.in_(confusion_ids))
             await db.execute(del_stmt)
 
-            # 4. Process each confusion event
-            for idx, event in enumerate(confusion_events):
-                # Build context from event and misconceptions
-                misc_details = []
-                for m in event.misconceptions:
-                    misc_details.append(
-                        f"- Misconception: {m.name}\n"
-                        f"  Explanation: {m.explanation}\n"
-                        f"  Root Cause Hypothesis: {m.apparent_reason}\n"
-                        f"  Severity: {m.severity}"
-                    )
-                misc_text = "\n".join(misc_details) if misc_details else f"Apparent Confusion: {event.misconception_text}"
-
-                prompt = (
-                    f"Lecture Title: {lecture.title}\n"
-                    f"Confusion Segment Timestamp: {event.timestamp_start:.1f}s - {event.timestamp_end:.1f}s\n"
-                    f"Hesitation Evidence Quote: \"{event.evidence_text}\"\n\n"
-                    f"Diagnosed Student Misconceptions:\n{misc_text}\n\n"
-                    f"Based on the above diagnostic signals, determine 2 to 4 prerequisite concepts "
-                    f"across varying depths (depth=1, depth=2, depth=3) that must be remediated."
-                )
-
-                # LLM Structured Generation with retry-once
-                logger.info(f"Synthesizing prerequisite gaps for confusion event {event.id}...")
-                trace_result: PrerequisiteTraceResult = await llm.generate_structured(
-                    prompt=prompt,
-                    response_model=PrerequisiteTraceResult,
-                    system_prompt=PREREQUISITE_TRACING_SYSTEM_PROMPT,
-                )
-
-                if not trace_result.gaps:
-                    raise AppException(
-                        f"LLM returned no prerequisite knowledge gaps for confusion event {event.id}.",
-                        code="PREREQUISITE_TRACING_FAILED",
-                        status_code=502,
-                    )
-
-                # Generate embeddings for semantic distance calculation
-                # Vector A: Context embedding (lecture misconception & hesitation quote)
-                context_str = f"{lecture.title}: {event.misconception_text}. Evidence: {event.evidence_text}"
-                concept_strs = [f"{g.concept_name}: {g.gap_description}" for g in trace_result.gaps]
-
-                all_texts = [context_str] + concept_strs
-                embeddings = await embedding_provider.embed_texts(all_texts)
-                if not embeddings or len(embeddings) != len(all_texts):
-                    raise AppException(
-                        f"Embedding provider returned invalid embedding count for event {event.id}.",
-                        code="EMBEDDING_FAILED",
-                        status_code=502,
-                    )
-
-                context_embedding = embeddings[0]
-                concept_embeddings = embeddings[1:]
-                embed_dim = len(context_embedding)
-
-                # Ensure vector store collection is strictly scoped to provider + model + dimension
-                vector_store.ensure_collection(
-                    dimension=embed_dim,
-                    provider=embedding_provider.name,
-                    model=embedding_provider.model,
-                )
-
-                # 5. Persist into ChromaDB and create domain PrerequisiteNodes
-                event_created_nodes: List[PrerequisiteNode] = []
-                for g_idx, gap_item in enumerate(trace_result.gaps):
-                    concept_emb = (
-                        concept_embeddings[g_idx]
-                        if g_idx < len(concept_embeddings)
-                        else context_embedding
-                    )
-
-                    node_id = str(uuid.uuid4())
-                    concept_store_id = f"prereq-{node_id}"
-
-                    # Index in persistent ChromaDB - failures strictly raise AppException
-                    vector_store.add_concept(
-                        concept_id=concept_store_id,
-                        document=f"{gap_item.concept_name} - {gap_item.gap_description}",
-                        embedding=concept_emb,
-                        metadata={
-                            "lecture_id": lecture_id,
-                            "confusion_id": event.id,
-                            "concept_name": gap_item.concept_name,
-                            "depth": gap_item.depth,
-                        },
-                    )
-
-                    event_created_nodes.append(
-                        (node_id, concept_store_id, gap_item, concept_emb)
-                    )
-
-                # Query ChromaDB to obtain real computed vector distances from the vector store
-                chroma_matches = vector_store.query_similar(
-                    query_embedding=context_embedding,
-                    n_results=len(event_created_nodes),
-                    where={"confusion_id": event.id},
-                )
-                chroma_dist_map = {m["id"]: m["distance"] for m in chroma_matches}
-
-                for node_id, concept_store_id, gap_item, concept_emb in event_created_nodes:
-                    vector_dist = chroma_dist_map.get(
-                        concept_store_id,
-                        VectorStoreService.compute_cosine_distance(context_embedding, concept_emb),
-                    )
-
-                    # Deterministic 3D coordinates:
-                    # x = timeline position percentage of the confusion event
-                    # y = vector distance from target topic * 100.0 (semantic cognitive divergence)
-                    event_x = 0.0
-                    if isinstance(event.coordinates, dict):
-                        event_x = float(event.coordinates.get("x", 0.0))
-                    elif hasattr(event.coordinates, "x"):
-                        event_x = float(getattr(event.coordinates, "x", 0.0))
-
-                    coord_x = round(event_x, 2)
-                    coord_y = round(float(vector_dist) * 100.0, 2)
-                    coord_z = float(gap_item.depth)
-
-                    node = PrerequisiteNode(
-                        id=node_id,
-                        confusion_id=event.id,
-                        concept_name=gap_item.concept_name,
-                        gap_description=gap_item.gap_description,
-                        remediation_hint=gap_item.remediation_hint,
-                        depth=gap_item.depth,
-                        vector_distance=round(float(vector_dist), 4),
-                        coordinates={"x": coord_x, "y": coord_y, "z": coord_z},
-                    )
+            for ev_nodes in results:
+                for node in ev_nodes:
                     db.add(node)
                     all_created_nodes.append(node)
-
-                # Progress update
-                if job_id:
-                    progress = int(20 + 75 * ((idx + 1) / total_events))
-                    await JobService.update_job_progress(job_id, progress, db)
 
             await db.commit()
 
@@ -247,7 +270,7 @@ class PrerequisiteService:
             await db.rollback()
             if job_id:
                 try:
-                    await JobService.update_job_status(job_id, "failed", 0, error_message=exc.message)
+                    await JobService.update_job_status(job_id, "failed", 0, error_message=format_exception_error(exc))
                 except Exception as status_err:
                     logger.warning(f"Failed to update job status on AppException: {status_err}")
             raise
@@ -256,7 +279,7 @@ class PrerequisiteService:
             logger.error(f"Prerequisite tracing failed: {exc}", exc_info=True)
             if job_id:
                 try:
-                    await JobService.update_job_status(job_id, "failed", 0, error_message=str(exc))
+                    await JobService.update_job_status(job_id, "failed", 0, error_message=format_exception_error(exc))
                 except Exception as status_err:
                     logger.warning(f"Failed to update job status on Exception: {status_err}")
             raise AppException(
@@ -274,12 +297,9 @@ class PrerequisiteService:
         if not lecture:
             raise ResourceNotFoundError("Lecture", lecture_id)
 
-        # Check if lecture has detected confusion events
-        stmt_conf = select(ConfusionEvent).where(ConfusionEvent.lecture_id == lecture_id).limit(1)
-        res_conf = await db.execute(stmt_conf)
-        if not res_conf.scalar_one_or_none():
+        if not await has_confusion_analysis_run(db, lecture_id):
             raise AppException(
-                f"Lecture '{lecture.title}' has no detected confusion events. Analyze cognitive signals before tracing prerequisites.",
+                f"Lecture '{lecture.title}' has no confusion events. Analyze cognitive signals before tracing prerequisites.",
                 code="CONFUSION_EVENTS_MISSING",
                 status_code=400,
             )
@@ -333,7 +353,7 @@ class PrerequisiteService:
                     j_err = res_j_err.scalar_one_or_none()
                     if j_err:
                         j_err.status = "failed"
-                        j_err.error_message = str(e)
+                        j_err.error_message = format_exception_error(e)
                     await db.commit()
                 except Exception as ex:
                     logger.critical(f"Failed to persist error for job {job_id}: {ex}")

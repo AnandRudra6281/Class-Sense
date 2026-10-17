@@ -57,7 +57,7 @@ describe('All 10 Platform Views Smoke Test', () => {
   it('7. renders MisconceptionsView', () => {
     render(<MisconceptionsView />);
     expect(screen.getByTestId('view-misconceptions')).toBeInTheDocument();
-    expect(screen.getByText(/Extracted Misconceptions & Root Causes/i)).toBeInTheDocument();
+    expect(screen.getByText(/Potential Misconceptions \(inferred from lecture speech\) & Root Causes/i)).toBeInTheDocument();
   });
 
   it('8. renders StudentView', () => {

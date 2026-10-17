@@ -37,12 +37,16 @@ htmlcov/
 
 # Databases
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 chroma_db/
 
 # Uploads & Media Artifacts
 uploads/
+uploads/audio/*
+uploads/raw/*
 media/
 temp_audio/
 

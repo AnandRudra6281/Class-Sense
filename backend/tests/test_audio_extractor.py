@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+import sys
 import pytest
 from app.core.errors import AudioExtractionError, MediaProcessingError
 from app.services.audio_extractor import AudioExtractor
@@ -27,8 +28,8 @@ async def sample_stereo_wav(tmp_path: Path) -> Path:
         "2",
         str(input_file),
     ]
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    await proc.communicate()
+    import subprocess
+    proc = await asyncio.to_thread(subprocess.run, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert input_file.exists() and input_file.stat().st_size > 0
     return input_file
 
@@ -72,3 +73,56 @@ async def test_extract_nonexistent_file_raises_error(extractor: AudioExtractor, 
     fake_path = tmp_path / "ghost.wav"
     with pytest.raises(MediaProcessingError):
         await extractor.extract_16k_mono_wav(fake_path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WindowsSelectorEventLoopPolicy is only available on Windows")
+def test_probe_metadata_and_extract_windows_selector_event_loop(tmp_path: Path):
+    """
+    Regression test: probe_metadata and extract_16k_mono_wav must succeed
+    under asyncio.WindowsSelectorEventLoopPolicy (which lacks native subprocess support).
+    """
+    policy = asyncio.WindowsSelectorEventLoopPolicy()
+    loop = policy.new_event_loop()
+    try:
+        async def run_under_selector_loop():
+            # 1. Create a synthetic audio file
+            input_file = tmp_path / "selector_input.wav"
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                str(input_file),
+            ]
+            import subprocess
+            proc = await asyncio.to_thread(subprocess.run, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            assert input_file.exists() and input_file.stat().st_size > 0
+
+            # 2. Probe metadata under SelectorEventLoop
+            extractor = AudioExtractor()
+            meta = await extractor.probe_metadata(input_file)
+            assert meta["has_audio"] is True
+            assert 1.5 <= meta["duration_seconds"] <= 2.5
+            assert meta["channels"] == 2
+            assert meta["sample_rate"] == 44100
+
+            # 3. Extract 16k mono wav under SelectorEventLoop
+            output_file = tmp_path / "selector_output_16k.wav"
+            extracted = await extractor.extract_16k_mono_wav(input_file, output_file)
+            assert extracted.exists()
+            assert extracted.stat().st_size > 0
+
+            # 4. Probe the extracted file
+            meta_extracted = await extractor.probe_metadata(extracted)
+            assert meta_extracted["channels"] == 1
+            assert meta_extracted["sample_rate"] == 16000
+
+        loop.run_until_complete(run_under_selector_loop())
+    finally:
+        loop.close()

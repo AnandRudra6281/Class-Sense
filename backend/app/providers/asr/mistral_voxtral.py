@@ -5,6 +5,7 @@ from mistralai.client import Mistral
 from app.core.config import settings
 from app.core.errors import AppException, ProviderDisabledError
 from app.providers.base import ASRProvider
+from app.providers.resilience import execute_with_resilience
 from app.schemas.transcript import (
     TranscriptionResult,
     TranscriptSegmentSchema,
@@ -26,7 +27,8 @@ class MistralVoxtralASR(ASRProvider):
         return "mistral_voxtral"
 
     def is_enabled(self) -> bool:
-        return bool(settings.MISTRAL_API_KEY)
+        key = (settings.MISTRAL_API_KEY or "").strip()
+        return bool(key and not key.startswith("your_") and key != "your_mistral_api_key_here")
 
     def _get_client(self) -> Mistral:
         if self._client:
@@ -57,13 +59,16 @@ class MistralVoxtralASR(ASRProvider):
                 "content": content,
             }
 
-            response = await client.audio.transcriptions.complete_async(
-                model=model_name,
-                file=file_payload,
-                language=language if language else None,
-                timestamp_granularities=["segment", "word"],
-            )
-        except ProviderDisabledError:
+            async def _call_asr():
+                return await client.audio.transcriptions.complete_async(
+                    model=model_name,
+                    file=file_payload,
+                    language=language if language else None,
+                    timestamp_granularities=["segment", "word"],
+                )
+
+            response = await execute_with_resilience(_call_asr, call_name=f"mistral_voxtral.transcribe({model_name})")
+        except (ProviderDisabledError, AppException):
             raise
         except Exception as exc:
             logger.error(f"Mistral Voxtral transcription failed: {exc}", exc_info=True)

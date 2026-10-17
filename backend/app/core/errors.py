@@ -167,3 +167,20 @@ def register_exception_handlers(app: FastAPI) -> None:
 def settings_module():
     from app.core.config import settings
     return settings
+
+
+def format_exception_error(exc: BaseException) -> str:
+    """Formats an exception into a non-empty error message for job persistence.
+    When exc has no message or str(exc) is empty, returns '<ExceptionClass>: <repr or traceback summary>'.
+    Never returns an empty string.
+    """
+    cls_name = exc.__class__.__name__
+    msg = str(exc).strip()
+    if not msg:
+        rep = repr(exc).strip()
+        if rep:
+            return f"{cls_name}: {rep}"
+        return f"{cls_name}: {cls_name}()"
+    if not msg.startswith(cls_name):
+        return f"{cls_name}: {msg}"
+    return msg

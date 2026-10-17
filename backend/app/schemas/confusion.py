@@ -9,9 +9,19 @@ class ConfusionSignals(BaseModel):
     wpm_anomaly_z: float = Field(..., description="Z-score anomaly of WPM against lecture baseline")
     pause_density: float = Field(ge=0.0, le=1.0, description="Ratio of intra-segment pause duration")
     disfluency_ratio: float = Field(ge=0.0, description="Ratio of filler words and repetitions")
+    question_density: Optional[float] = Field(default=0.0, ge=0.0, le=1.0, description="Density of pedagogical questions in window")
+    student_response_gap: Optional[float] = Field(default=0.0, ge=0.0, le=1.0, description="Normalized latency/silence following questions")
     type_token_ratio: float = Field(ge=0.0, le=1.0, description="Lexical diversity / cognitive density")
     llm_friction_score: float = Field(ge=0.0, le=1.0, description="Semantic cognitive friction score from LLM")
     composite_score: float = Field(ge=0.0, le=1.0, description="Fused acoustic + semantic confusion score")
+
+
+class LLMWindowConfusionAnalysis(BaseModel):
+    """Pydantic model for structured LLM window confusion analysis."""
+    confusion_score: float = Field(ge=0.0, le=1.0, description="Estimated confusion / cognitive friction level [0.0 - 1.0]")
+    ai_confidence: float = Field(ge=0.0, le=1.0, description="Confidence in the assessment [0.0 - 1.0]")
+    evidence_quote: str = Field(description="Shortest verbatim excerpt (max 30 words, 1-2 sentences) from the window transcript that demonstrates the confusion or friction")
+    rationale: str = Field(description="Pedagogical rationale explaining why this excerpt demonstrates cognitive difficulty or misconception")
 
 
 class ConfusionPointSchema(BaseModel):

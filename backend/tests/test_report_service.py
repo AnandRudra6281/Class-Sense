@@ -125,7 +125,9 @@ async def test_report_generation_pipeline_metrics_and_persistence():
         )
 
         mock_llm = AsyncMock()
+        mock_llm.name = "mock_llm"
         mock_llm.generate_structured.return_value = mock_report_payload
+
 
         # 3. Generate Report
         with patch("app.services.report_service.get_llm_provider", return_value=mock_llm):
@@ -181,3 +183,85 @@ async def test_report_generation_pipeline_metrics_and_persistence():
         assert json_data["format"] == "json"
         assert json_data["filename"].endswith(".json")
         assert "executive_summary" in json_data["content"]
+
+
+def test_wpm_pacing_band_mapping():
+    """Deterministic mapping of WPM to configurable bands: slow < 110, normal 110-180, fast > 180."""
+    assert report_service.classify_wpm_band(95.0) == "slow"
+    assert report_service.classify_wpm_band(109.9) == "slow"
+    assert report_service.classify_wpm_band(110.0) == "normal"
+    assert report_service.classify_wpm_band(163.0) == "normal"
+    assert report_service.classify_wpm_band(180.0) == "normal"
+    assert report_service.classify_wpm_band(180.1) == "fast"
+    assert report_service.classify_wpm_band(210.0) == "fast"
+
+
+@pytest.mark.asyncio
+async def test_163_wpm_never_described_as_fast_or_accelerated():
+    """Verify that a lecture delivered at 163 WPM maps to 'normal' band, passes 'NORMAL' to LLM,
+    forbids describing it as fast/accelerated in prompt, and persists correct metrics."""
+    async with async_session_factory() as db:
+        lecture = Lecture(
+            title="Linear Algebra: Span and Dimension",
+            source_type="upload",
+            duration_seconds=60.0,
+            status="analyzed",
+            coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
+        )
+        db.add(lecture)
+        await db.flush()
+
+        # Create exactly 163 words over 60 seconds (1 minute) = 163.0 WPM
+        words_163 = " ".join([f"word{i}" for i in range(163)])
+        seg = TranscriptSegment(
+            lecture_id=lecture.id,
+            start_time=0.0,
+            end_time=60.0,
+            text=words_163,
+            words=[],
+            coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
+        )
+        db.add(seg)
+        await db.commit()
+        await db.refresh(lecture)
+        lec_id = lecture.id
+
+        captured_prompt = None
+        captured_system_prompt = None
+
+        async def capture_generate_structured(prompt, response_model, system_prompt, **kwargs):
+            nonlocal captured_prompt, captured_system_prompt
+            captured_prompt = prompt
+            captured_system_prompt = system_prompt
+            return LLMReportPayload(
+                title="Pedagogy Quality & Cognitive Audit: Linear Algebra",
+                executive_summary=(
+                    "The lecture was delivered at a standard and accessible pace (163 WPM), "
+                    "allowing students to follow the mathematical definitions comfortably without cognitive rush."
+                ),
+                key_recommendations=["Maintain this steady instructional pace."],
+            )
+
+        mock_llm = AsyncMock()
+        mock_llm.name = "mock_llm"
+        mock_llm.generate_structured.side_effect = capture_generate_structured
+
+        with patch("app.services.report_service.get_llm_provider", return_value=mock_llm):
+            report = await report_service.generate_report_for_lecture(lec_id, db)
+
+        # 1. Assert quantitative metrics
+        assert report.metrics["avg_wpm"] == 163.0
+        assert report.metrics["wpm_band"] == "normal"
+
+        # 2. Assert prompt passes the band label and forbids fast/accelerated
+        assert "163.0 WPM" in captured_prompt
+        assert "NORMAL" in captured_prompt
+        assert "forbidden from describing normal pacing (e.g. 110-180 WPM, including 163 WPM) as fast, rapid, rushed, or accelerated" in captured_prompt
+        assert "STRICTLY FORBIDDEN from describing delivery as 'fast', 'rushed', 'rapid', or 'accelerated' if the pacing band is 'normal'" in captured_system_prompt
+
+        # 3. Assert executive summary does NOT describe pacing as fast or accelerated
+        summary_lower = report.executive_summary.lower()
+        forbidden_descriptors = ["fast pacing", "too fast", "accelerated", "rushed pacing", "rapid speech", "rapid delivery"]
+        for forbidden in forbidden_descriptors:
+            assert forbidden not in summary_lower, f"Forbidden descriptor '{forbidden}' found in report executive summary!"
+

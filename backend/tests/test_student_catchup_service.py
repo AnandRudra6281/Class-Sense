@@ -175,13 +175,14 @@ async def test_catchup_pipeline_and_api_endpoints():
         assert q["coordinates"]["z"] == 2.5
 
         # Test POST /api/v1/lectures/{target_lec_id}/generate-catchup
-        post_resp = await ac.post(f"/api/v1/lectures/{target_lec_id}/generate-catchup")
-        assert post_resp.status_code == 200
-        post_body = post_resp.json()
-        assert post_body["success"] is True
-        assert post_body["data"]["lecture_id"] == target_lec_id
-        assert post_body["data"]["status"] == "queued"
-        assert "job_id" in post_body["data"]
+        with patch("app.services.student_catchup_service.get_llm_provider", return_value=mock_llm):
+            post_resp = await ac.post(f"/api/v1/lectures/{target_lec_id}/generate-catchup")
+            assert post_resp.status_code == 200
+            post_body = post_resp.json()
+            assert post_body["success"] is True
+            assert post_body["data"]["lecture_id"] == target_lec_id
+            assert post_body["data"]["status"] == "queued"
+            assert "job_id" in post_body["data"]
 
 
 @pytest.mark.asyncio

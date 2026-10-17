@@ -6,6 +6,7 @@ from mistralai.client import Mistral
 from app.core.config import settings
 from app.core.errors import LLMValidationError, ProviderDisabledError
 from app.providers.base import LLMProvider
+from app.providers.resilience import execute_with_resilience
 
 logger = logging.getLogger("classsense.llm.mistral")
 
@@ -23,7 +24,8 @@ class MistralLLMProvider(LLMProvider):
         return "mistral"
 
     def is_enabled(self) -> bool:
-        return bool(settings.MISTRAL_API_KEY)
+        key = (settings.MISTRAL_API_KEY or "").strip()
+        return bool(key and not key.startswith("your_") and key != "your_mistral_api_key_here")
 
     def _get_client(self) -> Mistral:
         if self._client:
@@ -45,11 +47,14 @@ class MistralLLMProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response = await client.chat.complete_async(
-            model=model_name,
-            messages=messages,
-            temperature=0.2,
-        )
+        async def _call():
+            return await client.chat.complete_async(
+                model=model_name,
+                messages=messages,
+                temperature=0.2,
+            )
+
+        response = await execute_with_resilience(_call, call_name=f"mistral_llm.generate_text({model_name})")
 
         return response.choices[0].message.content or ""
 
@@ -78,16 +83,34 @@ class MistralLLMProvider(LLMProvider):
             {"role": "user", "content": prompt},
         ]
 
+        # Construct json_schema response_format
+        try:
+            from mistralai.extra import response_format_from_pydantic_model
+            resp_format = response_format_from_pydantic_model(response_model)
+        except Exception:
+            resp_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_model.__name__,
+                    "schema": response_model.model_json_schema(),
+                    "strict": True,
+                },
+            }
+
         # First Attempt
         raw_output = ""
         try:
-            logger.info(f"Calling Mistral LLM ({model_name}) with JSON mode for {response_model.__name__}...")
-            response = await client.chat.complete_async(
-                model=model_name,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-            )
+            logger.info(f"Calling Mistral LLM ({model_name}) with json_schema mode for {response_model.__name__}...")
+
+            async def _attempt1():
+                return await client.chat.complete_async(
+                    model=model_name,
+                    messages=messages,
+                    response_format=resp_format,
+                    temperature=0.1,
+                )
+
+            response = await execute_with_resilience(_attempt1, call_name=f"mistral_llm.generate_structured({response_model.__name__})")
             raw_output = response.choices[0].message.content or ""
             return response_model.model_validate_json(raw_output)
 
@@ -111,11 +134,17 @@ class MistralLLMProvider(LLMProvider):
             ]
 
             try:
-                retry_response = await client.chat.complete_async(
-                    model=model_name,
-                    messages=retry_messages,
-                    response_format={"type": "json_object"},
-                    temperature=0.0,
+                async def _attempt2():
+                    return await client.chat.complete_async(
+                        model=model_name,
+                        messages=retry_messages,
+                        response_format=resp_format,
+                        temperature=0.0,
+                    )
+
+                retry_response = await execute_with_resilience(
+                    _attempt2,
+                    call_name=f"mistral_llm.generate_structured_retry({response_model.__name__})",
                 )
                 retry_raw_output = retry_response.choices[0].message.content or ""
                 return response_model.model_validate_json(retry_raw_output)

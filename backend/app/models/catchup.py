@@ -17,4 +17,5 @@ class StudentCatchUp(Base, UUIDMixin, TimestampMixin, CoordinatesMixin):
     
     # Relationships
     lecture: Mapped["Lecture"] = relationship("Lecture", back_populates="student_catchups")
+    topic: Mapped[Optional["Topic"]] = relationship("Topic")
     quiz_questions: Mapped[List["QuizQuestion"]] = relationship("QuizQuestion", back_populates="catchup", cascade="all, delete-orphan")

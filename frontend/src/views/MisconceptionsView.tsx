@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BrainCircuit,
+  CheckCircle2,
 } from 'lucide-react';
 import { Card, Badge, Alert, Button, Progress } from '../components/ui';
 import { lectureService } from '../services/lectureService';
@@ -138,10 +139,10 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
             <AlertOctagon className="w-6 h-6 text-rose-400" />
-            Extracted Misconceptions & Root Causes
+            Potential Misconceptions (inferred from lecture speech) & Root Causes
           </h1>
           <p className="text-slate-400 text-sm mt-1">
-            Synthesized mental model failures, cognitive load metrics, and root cause prerequisite gaps grounded in empirical hesitation signals.
+            Potential student misconceptions inferred from lecture speech hesitation signals, acoustic stalls, and cognitive friction indicators.
           </p>
         </div>
 
@@ -195,7 +196,7 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
               <div>
                 <h3 className="text-lg font-bold text-white">{selectedLecture?.title}</h3>
                 <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1">
-                  <span>Misconceptions: <strong className="text-rose-400">{misconceptions.length}</strong></span>
+                  <span>Potential Misconceptions: <strong className="text-rose-400">{misconceptions.length}</strong></span>
                   <span>&bull;</span>
                   <span>Prerequisites: <strong className="text-emerald-400">{prerequisites.length}</strong></span>
                   <span>&bull;</span>
@@ -226,9 +227,9 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                   onClick={handleStartExtraction}
                   isLoading={Boolean(activeJobId && jobStatus === 'running')}
                   disabled={Boolean(activeJobId && jobStatus === 'running') || confusionEvents.length === 0}
-                  title={confusionEvents.length === 0 ? 'Analyze signals first' : 'Diagnose student misconceptions with LLM'}
+                  title={confusionEvents.length === 0 ? 'Analyze signals first' : 'Infer potential misconceptions (inferred from lecture speech) with LLM'}
                 >
-                  <Sparkles className="w-3.5 h-3.5 mr-1 inline" /> Extract Misconceptions
+                  <Sparkles className="w-3.5 h-3.5 mr-1 inline" /> Extract Potential Misconceptions
                 </Button>
               </div>
             </div>
@@ -249,12 +250,12 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                 />
                 {jobStatus === 'done' && (
                   <Alert severity="low" title="Diagnostic Extraction Completed">
-                    Diagnosed student misconceptions with root cause prerequisite links and 3D coordinates.
+                    Potential misconceptions (inferred from lecture speech) extracted with root cause prerequisite links and 3D coordinates.
                   </Alert>
                 )}
                 {jobStatus === 'failed' && (
                   <Alert severity="critical" title="Diagnostic Job Failed">
-                    {jobError || 'Failed to extract misconceptions.'}
+                    {jobError || 'Failed to extract potential misconceptions.'}
                   </Alert>
                 )}
               </div>
@@ -265,19 +266,30 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
           {isLoadingMisconceptions ? (
             <div className="py-8 text-center text-sm text-slate-400">
               <RefreshCw className="w-5 h-5 animate-spin mx-auto text-indigo-400 mb-1.5" />
-              Loading diagnosed misconceptions...
+              Loading potential misconceptions (inferred from lecture speech)...
             </div>
           ) : misconceptions.length === 0 ? (
-            <Card className="text-center py-8 text-sm text-slate-400 space-y-3">
-              <p>No student misconceptions extracted yet for this lecture.</p>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleStartExtraction}
-                disabled={confusionEvents.length === 0}
-              >
-                <Sparkles className="w-3.5 h-3.5 mr-1 inline text-indigo-400" /> Diagnose Misconceptions Now
-              </Button>
+            <Card className="text-center py-8 text-sm text-slate-400 space-y-3" data-testid="misconceptions-empty-state">
+              <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-1" />
+              <p className="font-semibold text-slate-200">
+                {confusionEvents.length === 0
+                  ? 'No cognitive confusion detected: lecture delivered with high instructional clarity.'
+                  : 'No potential misconceptions (inferred from lecture speech) extracted yet for this lecture.'}
+              </p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                {confusionEvents.length === 0
+                  ? 'Acoustic pacing and articulation metrics remained consistent throughout the presentation. No mental model repairs needed.'
+                  : 'Speech friction signals did not elevate to actionable misconception thresholds.'}
+              </p>
+              {confusionEvents.length > 0 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleStartExtraction}
+                >
+                  <Sparkles className="w-3.5 h-3.5 mr-1 inline text-indigo-400" /> Infer Potential Misconceptions Now
+                </Button>
+              )}
             </Card>
           ) : (
             <div className="space-y-4" data-testid="misconceptions-list">
@@ -285,6 +297,10 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                 const linkedEvent = confusionMap.get(m.confusion_id);
                 const linkedPrereqs = prereqMap.get(m.confusion_id) || [];
                 const loadPercent = Math.round(m.cognitive_load_score * 100);
+                const rawConfidence = typeof linkedEvent?.signals?.ai_confidence === 'number'
+                  ? (linkedEvent.signals.ai_confidence as number)
+                  : (linkedEvent?.confusion_score ?? m.cognitive_load_score ?? 0.85);
+                const confidencePct = Math.round(rawConfidence * 100);
 
                 return (
                   <Card key={m.id} className="space-y-3 p-4">
@@ -292,6 +308,9 @@ export const MisconceptionsView: React.FC<MisconceptionsViewProps> = ({ onNaviga
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant={m.severity} size="sm">
                           {m.severity.toUpperCase()} SEVERITY
+                        </Badge>
+                        <Badge variant="indigo" size="sm" data-testid={`misconception-confidence-${m.id}`}>
+                          Model Confidence: {confidencePct}%
                         </Badge>
                         <h3 className="text-base font-semibold text-white">{m.name}</h3>
                       </div>

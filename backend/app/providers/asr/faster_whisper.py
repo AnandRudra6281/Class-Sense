@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import List, Optional
 from app.core.config import settings
 from app.core.errors import AppException
 from app.providers.base import ASRProvider
+from app.providers.resilience import execute_with_resilience
 from app.schemas.transcript import (
     TranscriptionResult,
     TranscriptSegmentSchema,
@@ -32,7 +34,7 @@ class FasterWhisperASR(ASRProvider):
         except ImportError:
             return False
 
-    def _get_model(self):
+    async def _get_model(self):
         if self._model is not None:
             return self._model
         if not self.is_enabled():
@@ -42,8 +44,12 @@ class FasterWhisperASR(ASRProvider):
                 status_code=503,
             )
         from faster_whisper import WhisperModel
-        logger.info(f"Loading faster-whisper model '{self.model_size}' on CPU...")
-        self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+
+        def _load():
+            logger.info(f"Loading faster-whisper model '{self.model_size}' on CPU...")
+            return WhisperModel(self.model_size, device="cpu", compute_type="int8")
+
+        self._model = await asyncio.to_thread(_load)
         return self._model
 
     async def transcribe(
@@ -54,35 +60,58 @@ class FasterWhisperASR(ASRProvider):
         if not audio_path.exists():
             raise AppException(f"Audio file not found at {audio_path}", code="FILE_NOT_FOUND", status_code=404)
 
-        model = self._get_model()
+        model = await self._get_model()
 
         logger.info(f"Running faster-whisper transcription on '{audio_path.name}'...")
-        segments_gen, info = model.transcribe(
-            str(audio_path),
-            language=language,
-            word_timestamps=True,
+
+        def _run_transcription():
+            segments_gen, info = model.transcribe(
+                str(audio_path),
+                language=language,
+                word_timestamps=True,
+            )
+            raw_segments = []
+            for seg in segments_gen:
+                seg_words = []
+                for w in (seg.words or []):
+                    seg_words.append({
+                        "word": getattr(w, "word", str(w)),
+                        "start": float(getattr(w, "start", 0.0)),
+                        "end": float(getattr(w, "end", 0.0)),
+                        "probability": float(w.probability) if hasattr(w, "probability") and w.probability is not None else None,
+                    })
+                raw_segments.append({
+                    "start": float(seg.start),
+                    "end": float(seg.end),
+                    "text": seg.text.strip(),
+                    "words": seg_words,
+                })
+            return raw_segments, float(getattr(info, "duration", 0.0) or 0.0), getattr(info, "language", None) or "en"
+
+        raw_segments, total_duration, detected_language = await execute_with_resilience(
+            lambda: asyncio.to_thread(_run_transcription),
+            call_name=f"faster_whisper.transcribe({audio_path.name})",
         )
 
         all_words: List[WordTimestamp] = []
         segments: List[TranscriptSegmentSchema] = []
         full_text_parts = []
-        total_duration = float(info.duration or 0.0)
 
-        for idx, seg in enumerate(segments_gen):
-            full_text_parts.append(seg.text)
+        for idx, seg in enumerate(raw_segments):
+            full_text_parts.append(seg["text"])
             seg_words: List[WordTimestamp] = []
-            for w in (seg.words or []):
+            for w in seg["words"]:
                 word_obj = WordTimestamp(
-                    word=w.word,
-                    start=float(w.start),
-                    end=float(w.end),
-                    probability=float(w.probability) if hasattr(w, "probability") else None,
+                    word=w["word"],
+                    start=w["start"],
+                    end=w["end"],
+                    probability=w["probability"],
                 )
                 seg_words.append(word_obj)
                 all_words.append(word_obj)
 
             coords = compute_coordinates(
-                start_time=float(seg.start),
+                start_time=seg["start"],
                 lecture_duration=total_duration if total_duration > 0 else 1.0,
                 confusion_score=0.0,
                 topic_depth=0,
@@ -92,9 +121,9 @@ class FasterWhisperASR(ASRProvider):
                 TranscriptSegmentSchema(
                     id=f"seg-{idx}",
                     lecture_id="pending",
-                    start_time=float(seg.start),
-                    end_time=float(seg.end),
-                    text=seg.text.strip(),
+                    start_time=seg["start"],
+                    end_time=seg["end"],
+                    text=seg["text"],
                     words=seg_words,
                     coordinates=coords,
                 )
@@ -105,7 +134,7 @@ class FasterWhisperASR(ASRProvider):
         return TranscriptionResult(
             text=full_text,
             duration_seconds=total_duration,
-            language=info.language or "en",
+            language=detected_language,
             segments=segments,
             words=all_words,
         )

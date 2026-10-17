@@ -65,7 +65,7 @@ class TutorChatResponse(BaseModel):
 
 # LLM Structured Generation Schemas
 class LLMQuizQuestion(BaseModel):
-    question: str = Field(description="Clear multiple-choice practice question targeting the diagnosed misconception")
+    question: str = Field(description="Clear multiple-choice practice question targeting the potential misconception (inferred from lecture speech)")
     options: List[str] = Field(description="List of 4 answer choices")
     correct_option_index: int = Field(ge=0, le=3, description="Zero-indexed correct answer")
     hints: List[PracticeHintSchema] = Field(description="2 to 3 progressive Socratic hints from conceptual nudge to near-solution")

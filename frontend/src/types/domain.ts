@@ -36,6 +36,21 @@ export interface Lecture {
   updated_at: string;
 }
 
+export interface PipelineStageInfo {
+  name: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  progress_pct: number;
+  error?: string | null;
+}
+
+export interface PipelineJobPayload {
+  lecture_id: string;
+  stages: Record<string, PipelineStageInfo>;
+  current_stage?: string | null;
+  failed_stage?: string | null;
+  resume?: boolean;
+}
+
 // 2. Job
 export interface Job {
   id: string;
@@ -43,8 +58,8 @@ export interface Job {
   status: JobStatus;
   progress_pct: number;
   error_message?: string | null;
-  payload?: Record<string, unknown> | null;
-  result?: Record<string, unknown> | null;
+  payload?: Record<string, any> | null;
+  result?: Record<string, any> | null;
   coordinates: Coordinates3D;
   created_at: string;
   updated_at: string;

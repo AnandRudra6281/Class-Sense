@@ -1,10 +1,10 @@
 import logging
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import AppException, ResourceNotFoundError
+from app.core.errors import AppException, ResourceNotFoundError, format_exception_error
 from app.db.session import async_session_factory
 from app.models.job import Job
 from app.models.lecture import Lecture
@@ -64,6 +64,104 @@ class TopicSegmentationService:
         logger.info(f"Created topic segmentation job {job.id} for lecture {lecture.id}")
         return job
 
+    async def segment_topics_for_lecture(
+        self,
+        lecture_id: str,
+        db: AsyncSession,
+        job_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
+    ) -> List[Topic]:
+        """Segments a lecture transcript into hierarchical pedagogical topics via structured LLM calls,
+        persists Topic records, and returns the list of created topics.
+        """
+        stmt_l = select(Lecture).where(Lecture.id == lecture_id)
+        res_l = await db.execute(stmt_l)
+        lecture = res_l.scalar_one_or_none()
+        if not lecture:
+            raise ResourceNotFoundError("Lecture", lecture_id)
+
+        stmt_s = (
+            select(TranscriptSegment)
+            .where(TranscriptSegment.lecture_id == lecture.id)
+            .order_by(TranscriptSegment.start_time.asc())
+        )
+        res_s = await db.execute(stmt_s)
+        segments = res_s.scalars().all()
+
+        if not segments:
+            raise AppException("No transcript segments found to segment into topics.", code="TRANSCRIPT_EMPTY", status_code=400)
+
+        if progress_callback:
+            await progress_callback(20)
+
+        transcript_text = "\n".join(
+            f"[{seg.start_time:.1f}s - {seg.end_time:.1f}s] {seg.text}"
+            for seg in segments
+        )
+
+        llm = get_llm_provider()
+        system_prompt = (
+            "You are a master pedagogical curriculum designer. "
+            "Segment this academic lecture transcript into a coherent, hierarchical topic outline. "
+            "Use depth 0 for main topics and depth 1 for subtopics. "
+            "Specify accurate start_time and end_time timestamps for each section. "
+            "Ensure topic titles are clear and summaries describe the pedagogical content."
+        )
+
+        prompt = (
+            f"Lecture Title: {lecture.title}\n"
+            f"Total Duration: {lecture.duration_seconds:.1f} seconds\n\n"
+            f"Transcript:\n{transcript_text[:15000]}\n\n"
+            "Please structure the lecture into sequential topics adhering strictly to the TopicSegmentationResponse schema."
+        )
+
+        logger.info(f"Generating structured topic outline via {llm.name}...")
+        segmented_result: TopicSegmentationResponse = await llm.generate_structured(
+            prompt=prompt,
+            response_model=TopicSegmentationResponse,
+            system_prompt=system_prompt,
+        )
+
+        if progress_callback:
+            await progress_callback(80)
+
+        await db.execute(delete(Topic).where(Topic.lecture_id == lecture.id))
+
+        created_topics: List[Topic] = []
+        topic_id_map: dict[int, str] = {}
+
+        for idx, t_item in enumerate(segmented_result.topics):
+            coords = compute_coordinates(
+                start_time=t_item.start_time,
+                lecture_duration=lecture.duration_seconds if lecture.duration_seconds > 0 else 1.0,
+                confusion_score=0.0,
+                topic_depth=t_item.depth,
+            )
+
+            topic_record = Topic(
+                lecture_id=lecture.id,
+                title=t_item.title,
+                summary=t_item.summary,
+                start_time=t_item.start_time,
+                end_time=t_item.end_time,
+                depth=t_item.depth,
+                coordinates=coords.model_dump(),
+            )
+            db.add(topic_record)
+            await db.flush()
+
+            created_topics.append(topic_record)
+            topic_id_map[idx] = topic_record.id
+
+        # Link parent_ids for subtopics
+        for idx, t_item in enumerate(segmented_result.topics):
+            if t_item.parent_index is not None and t_item.parent_index in topic_id_map:
+                parent_id = topic_id_map[t_item.parent_index]
+                created_topics[idx].parent_id = parent_id
+
+        await db.commit()
+        return created_topics
+
     async def run_topic_segmentation_pipeline(self, job_id: str) -> None:
         """Background worker that calls LLM to structure lecture topics and persists them."""
         async with async_session_factory() as db:
@@ -82,103 +180,24 @@ class TopicSegmentationService:
                 return
 
             try:
-                # Step 1: Initialize (20%)
                 job.status = "running"
                 job.progress_pct = 20
                 await db.commit()
 
-                # Fetch all segments
-                stmt_s = (
-                    select(TranscriptSegment)
-                    .where(TranscriptSegment.lecture_id == lecture.id)
-                    .order_by(TranscriptSegment.start_time.asc())
+                created_topics = await self.segment_topics_for_lecture(
+                    lecture_id=lecture.id,
+                    db=db,
+                    job_id=job.id,
                 )
-                res_s = await db.execute(stmt_s)
-                segments = res_s.scalars().all()
-
-                if not segments:
-                    raise AppException("No transcript segments found to segment into topics.", code="TRANSCRIPT_EMPTY", status_code=400)
-
-                # Format transcript for LLM
-                transcript_text = "\n".join(
-                    f"[{seg.start_time:.1f}s - {seg.end_time:.1f}s] {seg.text}"
-                    for seg in segments
-                )
-
-                job.progress_pct = 40
-                await db.commit()
-
-                # Step 2: Prompt LLM in Structured JSON Mode (40% -> 80%)
-                llm = get_llm_provider()
-                system_prompt = (
-                    "You are a master pedagogical curriculum designer. "
-                    "Segment this academic lecture transcript into a coherent, hierarchical topic outline. "
-                    "Use depth 0 for main topics and depth 1 for subtopics. "
-                    "Specify accurate start_time and end_time timestamps for each section. "
-                    "Ensure topic titles are clear and summaries describe the pedagogical content."
-                )
-
-                prompt = (
-                    f"Lecture Title: {lecture.title}\n"
-                    f"Total Duration: {lecture.duration_seconds:.1f} seconds\n\n"
-                    f"Transcript:\n{transcript_text[:15000]}\n\n"
-                    "Please structure the lecture into sequential topics adhering strictly to the TopicSegmentationResponse schema."
-                )
-
-                logger.info(f"Generating structured topic outline via {llm.name}...")
-                segmented_result: TopicSegmentationResponse = await llm.generate_structured(
-                    prompt=prompt,
-                    response_model=TopicSegmentationResponse,
-                    system_prompt=system_prompt,
-                )
-
-                job.progress_pct = 80
-                await db.commit()
-
-                # Step 3: Clear previous topics and persist (80% -> 100%)
-                await db.execute(delete(Topic).where(Topic.lecture_id == lecture.id))
-
-                created_topics: List[Topic] = []
-                topic_id_map: dict[int, str] = {}
-
-                for idx, t_item in enumerate(segmented_result.topics):
-                    coords = compute_coordinates(
-                        start_time=t_item.start_time,
-                        lecture_duration=lecture.duration_seconds if lecture.duration_seconds > 0 else 1.0,
-                        confusion_score=0.0,
-                        topic_depth=t_item.depth,
-                    )
-
-                    topic_record = Topic(
-                        lecture_id=lecture.id,
-                        title=t_item.title,
-                        summary=t_item.summary,
-                        start_time=t_item.start_time,
-                        end_time=t_item.end_time,
-                        depth=t_item.depth,
-                        coordinates=coords.model_dump(),
-                    )
-                    db.add(topic_record)
-                    await db.flush()
-
-                    created_topics.append(topic_record)
-                    topic_id_map[idx] = topic_record.id
-
-                # Link parent_ids for subtopics
-                for idx, t_item in enumerate(segmented_result.topics):
-                    if t_item.parent_index is not None and t_item.parent_index in topic_id_map:
-                        parent_id = topic_id_map[t_item.parent_index]
-                        created_topics[idx].parent_id = parent_id
 
                 job.status = "done"
                 job.progress_pct = 100
                 job.result = {
                     "lecture_id": lecture.id,
                     "topics_count": len(created_topics),
-                    "depth_0_count": sum(1 for t in segmented_result.topics if t.depth == 0),
-                    "depth_1_count": sum(1 for t in segmented_result.topics if t.depth == 1),
+                    "depth_0_count": sum(1 for t in created_topics if t.depth == 0),
+                    "depth_1_count": sum(1 for t in created_topics if t.depth == 1),
                 }
-
                 await db.commit()
                 logger.info(f"Topic segmentation job {job.id} completed: {len(created_topics)} topics created.")
 
@@ -191,7 +210,7 @@ class TopicSegmentationService:
                     j_err = res_j.scalar_one_or_none()
                     if j_err:
                         j_err.status = "failed"
-                        j_err.error_message = str(e)
+                        j_err.error_message = format_exception_error(e)
                     await db.commit()
                 except Exception as ex:
                     logger.critical(f"Failed to persist error for job {job_id}: {ex}")

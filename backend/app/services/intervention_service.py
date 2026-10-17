@@ -1,11 +1,11 @@
 import logging
 import uuid
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.errors import AppException, ResourceNotFoundError
+from app.core.errors import AppException, ResourceNotFoundError, format_exception_error
 from app.db.session import async_session_factory
 from app.models.confusion import ConfusionEvent
 from app.models.intervention import Intervention
@@ -13,7 +13,9 @@ from app.models.job import Job
 from app.models.lecture import Lecture
 from app.models.misconception import Misconception
 from app.models.prerequisite import PrerequisiteNode
+from app.models.transcript import TranscriptSegment
 from app.schemas.intervention import TeacherInterventionPackage, TeacherInterventionResponse
+from app.services.confusion_check import has_confusion_analysis_run
 from app.services.job_service import JobService
 from app.services.provider_factory import get_llm_provider
 
@@ -25,7 +27,7 @@ Your mission is to synthesize high-impact, actionable instructional intervention
 Given:
 - Lecture title and topics
 - Hesitation evidence and acoustic struggle quotes
-- Diagnosed student misconceptions (flawed intuitions, root causes, cognitive load)
+- Potential misconceptions (inferred from lecture speech) (flawed intuitions, root causes, cognitive load)
 - Traced prerequisite knowledge gaps (concept names, depth levels, remediation hints)
 
 Generate 1 to 3 targeted `TeacherInterventionPackage` items. Each package must include:
@@ -43,19 +45,16 @@ class InterventionService:
     """Service orchestrating LLM-based teacher intervention generation grounded in confusion and prerequisite data."""
 
     async def create_intervention_job(self, db: AsyncSession, lecture_id: str) -> Job:
-        """Validates lecture and confusion events, then creates a persisted intervention generation Job."""
+        """Validates lecture and creates a persisted intervention generation Job."""
         stmt = select(Lecture).where(Lecture.id == lecture_id)
         res = await db.execute(stmt)
         lecture = res.scalar_one_or_none()
         if not lecture:
             raise ResourceNotFoundError("Lecture", lecture_id)
 
-        # Check if lecture has detected confusion events
-        stmt_conf = select(ConfusionEvent).where(ConfusionEvent.lecture_id == lecture_id).limit(1)
-        res_conf = await db.execute(stmt_conf)
-        if not res_conf.scalar_one_or_none():
+        if not await has_confusion_analysis_run(db, lecture.id):
             raise AppException(
-                f"Lecture '{lecture.title}' has no detected confusion events. Analyze cognitive signals before generating interventions.",
+                f"Lecture '{lecture.title}' has no confusion events. Analyze cognitive signals before generating teacher interventions.",
                 code="CONFUSION_EVENTS_MISSING",
                 status_code=400,
             )
@@ -111,7 +110,7 @@ class InterventionService:
                     j_err = res_j_err.scalar_one_or_none()
                     if j_err:
                         j_err.status = "failed"
-                        j_err.error_message = str(e)
+                        j_err.error_message = format_exception_error(e)
                     await db.commit()
                 except Exception as ex:
                     logger.critical(f"Failed to persist error for job {job_id}: {ex}")
@@ -121,8 +120,9 @@ class InterventionService:
         lecture_id: str,
         db: AsyncSession,
         job_id: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], Awaitable[None]]] = None,
     ) -> List[Intervention]:
-        """Synthesize and persist actionable teacher interventions grounded in diagnosed misconceptions and prerequisites."""
+        """Synthesize and persist actionable teacher interventions grounded in potential misconceptions (inferred from lecture speech) and prerequisites."""
         logger.info(f"Starting teacher intervention synthesis for lecture {lecture_id}...")
 
         try:
@@ -143,12 +143,24 @@ class InterventionService:
             res_c = await db.execute(stmt_c)
             confusion_events = list(res_c.scalars().all())
 
+            # Clean up prior interventions for idempotency
+            await db.execute(delete(Intervention).where(Intervention.lecture_id == lecture_id))
+            await db.commit()
+
             if not confusion_events:
-                raise AppException(
-                    f"No confusion events found for lecture '{lecture_id}'. Analyze cognitive signals before generating interventions.",
-                    code="CONFUSION_EVENTS_MISSING",
-                    status_code=400,
-                )
+                if not await has_confusion_analysis_run(db, lecture_id):
+                    raise AppException(
+                        f"Lecture '{lecture.title}' has no confusion events. Analyze cognitive signals before generating teacher interventions.",
+                        code="CONFUSION_EVENTS_MISSING",
+                        status_code=400,
+                    )
+                logger.info(f"No confusion events found for lecture '{lecture_id}'. Zero teacher interventions generated.")
+                await db.commit()
+                if progress_callback:
+                    await progress_callback(100)
+                if job_id:
+                    await JobService.update_job_status(job_id, "done", 100, db)
+                return []
 
             # Fetch Prerequisites
             confusion_ids = [e.id for e in confusion_events]
@@ -160,7 +172,9 @@ class InterventionService:
             res_p = await db.execute(stmt_p)
             prereq_nodes = list(res_p.scalars().all())
 
-            if job_id:
+            if progress_callback:
+                await progress_callback(35)
+            elif job_id:
                 await JobService.update_job_progress(job_id, 35, db)
 
             # 3. Formulate Prompt Context
@@ -181,7 +195,7 @@ class InterventionService:
                 events_summary.append(
                     f"Timestamp: {ev.timestamp_start:.1f}s - {ev.timestamp_end:.1f}s (Confusion Score: {ev.confusion_score:.2f})\n"
                     f"Evidence: \"{ev.evidence_text}\"\n"
-                    f"Diagnosed Misconceptions:\n" + ("\n".join(misc_strs) if misc_strs else "  * None diagnosed yet")
+                    f"Potential Misconceptions (inferred from lecture speech):\n" + ("\n".join(misc_strs) if misc_strs else "  * None diagnosed yet")
                 )
 
             prereq_strs = []
@@ -217,7 +231,9 @@ class InterventionService:
                     status_code=502,
                 )
 
-            if job_id:
+            if progress_callback:
+                await progress_callback(75)
+            elif job_id:
                 await JobService.update_job_progress(job_id, 75, db)
 
             # 5. Clear previous teacher interventions for this lecture (idempotency)

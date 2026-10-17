@@ -43,6 +43,7 @@ class LectureDetailResponse(LectureResponse):
 class YouTubeIngestRequest(BaseModel):
     url: str
     title: Optional[str] = None
+    auto_analyze: bool = False
 
 
 class IngestJobResponse(BaseModel):
@@ -50,6 +51,7 @@ class IngestJobResponse(BaseModel):
     job_id: str
     status: str
     title: str
+    analyze_job_id: Optional[str] = None
 
 
 class TranscribeRequest(BaseModel):

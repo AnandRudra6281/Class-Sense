@@ -3,6 +3,7 @@ import {
   ConfusionEvent,
   Evidence,
   Intervention,
+  Job,
   Lecture,
   LectureDetail,
   Misconception,
@@ -21,11 +22,13 @@ export interface IngestJobResponse {
   job_id: string;
   status: string;
   title: string;
+  analyze_job_id?: string | null;
 }
 
 export interface YouTubeIngestPayload {
   url: string;
   title?: string;
+  auto_analyze?: boolean;
 }
 
 export interface CreateLecturePayload {
@@ -49,11 +52,14 @@ export const lectureService = {
     return request<LectureDetail>(`/lectures/${lectureId}`);
   },
 
-  async uploadLectureMedia(file: File, title?: string): Promise<IngestJobResponse> {
+  async uploadLectureMedia(file: File, title?: string, autoAnalyze: boolean = false): Promise<IngestJobResponse> {
     const formData = new FormData();
     formData.append('file', file);
     if (title && title.trim()) {
       formData.append('title', title.trim());
+    }
+    if (autoAnalyze) {
+      formData.append('auto_analyze', 'true');
     }
 
     return request<IngestJobResponse>('/lectures/upload', {
@@ -66,6 +72,13 @@ export const lectureService = {
     return request<IngestJobResponse>('/lectures/youtube', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+
+  async analyzeLecture(lectureId: string, options?: { resume?: boolean }): Promise<Job> {
+    const resumeParam = options?.resume ? '?resume=true' : '';
+    return request<Job>(`/lectures/${lectureId}/analyze${resumeParam}`, {
+      method: 'POST',
     });
   },
 

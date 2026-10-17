@@ -4,7 +4,7 @@ from typing import Any, Callable, Coroutine, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import async_session_factory
-from app.core.errors import JobNotFoundError
+from app.core.errors import JobNotFoundError, format_exception_error
 from app.models.job import Job, JobStatus
 
 logger = logging.getLogger("classsense.job_service")
@@ -55,7 +55,13 @@ class JobService:
         if progress_pct is not None:
             job.progress_pct = max(0, min(100, progress_pct))
         if error_message is not None:
-            job.error_message = error_message
+            clean_err = error_message.strip()
+            if not clean_err and (status == JobStatus.FAILED or status == "failed"):
+                clean_err = "RuntimeError: Job failed with an unspecified error."
+            job.error_message = clean_err
+        elif status == JobStatus.FAILED or status == "failed":
+            if not job.error_message:
+                job.error_message = "RuntimeError: Job failed with an unspecified error."
         if result is not None:
             job.result = result
 
@@ -130,5 +136,49 @@ class JobService:
                     sess,
                     job_id,
                     status=JobStatus.FAILED,
-                    error_message=str(exc),
+                    error_message=format_exception_error(exc),
                 )
+
+    @staticmethod
+    async def cleanup_interrupted_jobs(db: AsyncSession) -> int:
+        """Finds all jobs stuck in QUEUED or RUNNING upon server startup and marks them FAILED with 'Interrupted by server restart'."""
+        stmt = select(Job).where(
+            Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING, "queued", "running"])
+        )
+        res = await db.execute(stmt)
+        stuck_jobs = res.scalars().all()
+
+        for job in stuck_jobs:
+            job.status = JobStatus.FAILED
+            job.error_message = "Interrupted by server restart"
+
+            # If this is a pipeline job with stages payload, update the active stage state
+            if job.payload and isinstance(job.payload, dict) and "stages" in job.payload:
+                payload = dict(job.payload)
+                stages = dict(payload.get("stages", {}))
+                current_stage = payload.get("current_stage")
+                failed_stage = None
+
+                for s_key, s_data in stages.items():
+                    if isinstance(s_data, dict) and s_data.get("status") in ("running", "queued"):
+                        s_data["status"] = "failed"
+                        s_data["error"] = "Interrupted by server restart"
+                        failed_stage = s_key
+
+                if not failed_stage and current_stage and current_stage in stages:
+                    if stages[current_stage].get("status") != "done":
+                        stages[current_stage]["status"] = "failed"
+                        stages[current_stage]["error"] = "Interrupted by server restart"
+                        failed_stage = current_stage
+
+                payload["stages"] = stages
+                if failed_stage:
+                    payload["failed_stage"] = failed_stage
+                job.payload = payload
+
+        if stuck_jobs:
+            await db.commit()
+            logger.info(
+                f"Marked {len(stuck_jobs)} interrupted job(s) as failed with 'Interrupted by server restart'."
+            )
+        return len(stuck_jobs)

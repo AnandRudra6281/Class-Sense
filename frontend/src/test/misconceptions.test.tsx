@@ -70,7 +70,7 @@ describe('Phase 4 MisconceptionsView Tests', () => {
     vi.clearAllMocks();
   });
 
-  it('renders diagnosed misconceptions with severity badges, root cause gaps, and coordinates', async () => {
+  it('renders potential misconceptions (inferred from lecture speech) with severity badges, model confidence, root cause gaps, and coordinates', async () => {
     (lectureService.listLectures as any).mockResolvedValue(mockLectures);
     (lectureService.getMisconceptions as any).mockResolvedValue(mockMisconceptions);
     (lectureService.getConfusionEvents as any).mockResolvedValue(mockConfusionEvents);
@@ -89,6 +89,7 @@ describe('Phase 4 MisconceptionsView Tests', () => {
     expect(within(list).getByText('Assuming Level Curves Align with Gradient Vector')).toBeInTheDocument();
     expect(within(list).getByText(/CRITICAL SEVERITY/i)).toBeInTheDocument();
     expect(within(list).getByText(/HIGH SEVERITY/i)).toBeInTheDocument();
+    expect(within(list).getAllByText(/Model Confidence: 85%/i).length).toBe(2);
     expect(within(list).getByText(/Over-reliance on single-variable derivative intuition/i)).toBeInTheDocument();
     expect(within(list).getByText(/Coord: \(33.3, 92.0, 1.0\)/i)).toBeInTheDocument();
     expect(within(list).getAllByText('92%').length).toBeGreaterThan(0);
@@ -108,7 +109,7 @@ describe('Phase 4 MisconceptionsView Tests', () => {
 
     render(<MisconceptionsView />);
 
-    const extractBtn = await screen.findByRole('button', { name: /extract misconceptions/i });
+    const extractBtn = await screen.findByRole('button', { name: /extract potential misconceptions/i });
     await waitFor(() => {
       expect(extractBtn).not.toBeDisabled();
     });

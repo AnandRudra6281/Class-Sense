@@ -6,6 +6,7 @@ from app.db.session import async_session_factory
 from app.main import app
 from app.models.confusion import ConfusionEvent
 from app.models.evidence import Evidence
+from app.models.job import Job
 from app.models.lecture import Lecture
 from app.models.topic import Topic
 from app.models.transcript import TranscriptSegment
@@ -84,9 +85,20 @@ async def test_confusion_pipeline_and_evidence_endpoints():
         job = await confusion_service.create_analysis_job(db, lecture_id)
         assert job.status == "queued"
         job_id = job.id
+    from unittest.mock import AsyncMock, patch
+    from app.schemas.confusion import LLMWindowConfusionAnalysis
+
+    mock_llm = AsyncMock()
+    mock_llm.generate_structured.return_value = LLMWindowConfusionAnalysis(
+        confusion_score=0.75,
+        ai_confidence=0.88,
+        evidence_quote="collapse uh the state",
+        rationale="Hesitation during quantum state collapse explanation.",
+    )
 
     # Run the background pipeline
-    await confusion_service.run_confusion_pipeline(job_id)
+    with patch("app.services.confusion_service.get_llm_provider", return_value=mock_llm):
+        await confusion_service.run_confusion_pipeline(job_id)
 
     # 3. Verify ConfusionEvent and Evidence records in DB
     async with async_session_factory() as db:
@@ -133,6 +145,8 @@ async def test_confusion_pipeline_and_evidence_endpoints():
         assert len(events_json) >= 1
         assert events_json[0]["confusion_score"] > 0.0
         assert "signals" in events_json[0]
+        assert "baseline_status" in events_json[0]["signals"]
+        assert "method_metadata" in events_json[0]["signals"]
 
         # GET /evidence
         resp_e = await ac.get(f"/api/v1/lectures/{lecture_id}/evidence")
@@ -140,3 +154,60 @@ async def test_confusion_pipeline_and_evidence_endpoints():
         evidence_json = resp_e.json()["data"]
         assert len(evidence_json) >= 1
         assert evidence_json[0]["signal_type"] in ["disfluency", "pause_density", "acoustic_wpm", "semantic"]
+
+
+@pytest.mark.asyncio
+async def test_calm_lecture_confusion_gating_yields_zero_events():
+    """A calm lecture with no acoustic spikes or low fused score yields 0 confusion events."""
+    async with async_session_factory() as db:
+        lec = Lecture(
+            title="Calm Linear Algebra Lecture",
+            source_type="upload",
+            duration_seconds=60.0,
+            status="transcribed",
+            coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
+        )
+        db.add(lec)
+        await db.flush()
+
+        seg = TranscriptSegment(
+            lecture_id=lec.id,
+            start_time=0.0,
+            end_time=45.0,
+            text="Today we define vectors and linear independence in standard Euclidean spaces.",
+            words=[{"word": f"w{i}", "start": float(i) * 0.45, "end": float(i) * 0.45 + 0.3} for i in range(100)],
+            coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
+        )
+        db.add(seg)
+        await db.commit()
+        await db.refresh(lec)
+        lecture_id = lec.id
+
+    async with async_session_factory() as db:
+        job = await confusion_service.create_analysis_job(db, lecture_id)
+        job_id = job.id
+
+    from unittest.mock import AsyncMock, patch
+    from app.schemas.confusion import LLMWindowConfusionAnalysis
+
+    mock_llm = AsyncMock()
+    # Even if LLM returns 0.20, fused score will be well below CONFUSION_MIN_SCORE (0.35)
+    mock_llm.generate_structured.return_value = LLMWindowConfusionAnalysis(
+        confusion_score=0.15,
+        ai_confidence=0.90,
+        evidence_quote="vectors and linear independence",
+        rationale="Clear and calm delivery.",
+    )
+
+    with patch("app.services.confusion_service.get_llm_provider", return_value=mock_llm):
+        await confusion_service.run_confusion_pipeline(job_id)
+
+    async with async_session_factory() as db:
+        res_ev = await db.execute(select(ConfusionEvent).where(ConfusionEvent.lecture_id == lecture_id))
+        events = list(res_ev.scalars().all())
+        assert len(events) == 0, "Calm speech must produce 0 confusion events"
+
+        res_j = await db.execute(select(Job).where(Job.id == job_id))
+        job = res_j.scalar_one()
+        assert job.status == "done"
+        assert job.result["confusion_events_count"] == 0

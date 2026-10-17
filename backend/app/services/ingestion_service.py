@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ResourceNotFoundError
+from app.core.errors import ResourceNotFoundError, format_exception_error
 from app.db.session import async_session_factory
 from app.models.job import Job
 from app.models.lecture import Lecture
@@ -23,7 +23,8 @@ class IngestionService:
         media_path: Path,
         filename: str,
         custom_title: Optional[str] = None,
-    ) -> Tuple[Lecture, Job]:
+        auto_analyze: bool = False,
+    ) -> Tuple[Lecture, Job, Optional[Job]]:
         """Creates initial Lecture and Job records for an uploaded file."""
         title = custom_title.strip() if custom_title and custom_title.strip() else Path(filename).stem.replace("_", " ").title()
 
@@ -38,6 +39,13 @@ class IngestionService:
         db.add(lecture)
         await db.flush()
 
+        analyze_job = None
+        analyze_job_id = None
+        if auto_analyze:
+            from app.services.pipeline_service import pipeline_service
+            analyze_job = await pipeline_service.create_pipeline_job(db=db, lecture_id=lecture.id, resume=False)
+            analyze_job_id = analyze_job.id
+
         job = Job(
             job_type="lecture_ingestion",
             status="queued",
@@ -47,6 +55,7 @@ class IngestionService:
                 "source_type": "upload",
                 "file_path": str(media_path),
                 "original_filename": filename,
+                "auto_analyze_job_id": analyze_job_id,
             },
             coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
         )
@@ -55,15 +64,16 @@ class IngestionService:
         await db.refresh(lecture)
         await db.refresh(job)
 
-        logger.info(f"Created upload ingestion job {job.id} for lecture {lecture.id}")
-        return lecture, job
+        logger.info(f"Created upload ingestion job {job.id} for lecture {lecture.id} (auto_analyze={auto_analyze})")
+        return lecture, job, analyze_job
 
     async def create_youtube_job(
         self,
         db: AsyncSession,
         url: str,
         custom_title: Optional[str] = None,
-    ) -> Tuple[Lecture, Job]:
+        auto_analyze: bool = False,
+    ) -> Tuple[Lecture, Job, Optional[Job]]:
         """Creates initial Lecture and Job records for a YouTube URL."""
         video_id = youtube_downloader.extract_video_id(url) or "video"
         title = custom_title.strip() if custom_title and custom_title.strip() else f"YouTube Lecture ({video_id})"
@@ -79,6 +89,13 @@ class IngestionService:
         db.add(lecture)
         await db.flush()
 
+        analyze_job = None
+        analyze_job_id = None
+        if auto_analyze:
+            from app.services.pipeline_service import pipeline_service
+            analyze_job = await pipeline_service.create_pipeline_job(db=db, lecture_id=lecture.id, resume=False)
+            analyze_job_id = analyze_job.id
+
         job = Job(
             job_type="lecture_ingestion",
             status="queued",
@@ -87,6 +104,7 @@ class IngestionService:
                 "lecture_id": lecture.id,
                 "source_type": "youtube",
                 "url": url.strip(),
+                "auto_analyze_job_id": analyze_job_id,
             },
             coordinates={"x": 0.0, "y": 0.0, "z": 0.0},
         )
@@ -95,8 +113,8 @@ class IngestionService:
         await db.refresh(lecture)
         await db.refresh(job)
 
-        logger.info(f"Created YouTube ingestion job {job.id} for lecture {lecture.id}")
-        return lecture, job
+        logger.info(f"Created YouTube ingestion job {job.id} for lecture {lecture.id} (auto_analyze={auto_analyze})")
+        return lecture, job, analyze_job
 
     async def run_ingestion_pipeline(self, job_id: str) -> None:
         """
@@ -187,6 +205,13 @@ class IngestionService:
                 await db.commit()
                 logger.info(f"Ingestion job {job.id} completed successfully for lecture {lecture.id}")
 
+                # If auto-analyze was requested, trigger the full pipeline in background
+                auto_analyze_job_id = job.payload.get("auto_analyze_job_id") if job.payload else None
+                if auto_analyze_job_id:
+                    from app.services.pipeline_service import pipeline_service
+                    logger.info(f"Auto-analyze requested. Launching pipeline job {auto_analyze_job_id} for lecture {lecture.id}...")
+                    await pipeline_service.run_full_pipeline(auto_analyze_job_id)
+
             except Exception as e:
                 logger.error(f"Ingestion job {job.id} failed: {e}", exc_info=True)
                 await db.rollback()
@@ -197,7 +222,7 @@ class IngestionService:
                     j_err = res_j.scalar_one_or_none()
                     if j_err:
                         j_err.status = "failed"
-                        j_err.error_message = str(e)
+                        j_err.error_message = format_exception_error(e)
 
                     res_l = await db.execute(select(Lecture).where(Lecture.id == lecture_id))
                     l_err = res_l.scalar_one_or_none()
