@@ -183,3 +183,5 @@ The frontend uses a custom Dark-Navy SaaS palette with 4 distinct severity tiers
 
 ## 🛡️ License
 MIT License - Created for ClassSense.
+#   C l a s s - S e n s e  
+ 
